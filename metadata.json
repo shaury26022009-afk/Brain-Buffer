@@ -1,0 +1,6 @@
+{
+  "name": "Brain Buffer",
+  "description": "A calm, rewarding student productivity, focus, planning, and mental clarity companion. Make space for what matters.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

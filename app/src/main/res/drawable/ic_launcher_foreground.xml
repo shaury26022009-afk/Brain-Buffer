@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer open Focus Orbit / Buffer Ring strictly inside the 66dp safe zone (center 54,54, r=24) -->
+    <path
+        android:pathData="M75.92,44.24 A24,24 0 1,1 54,30"
+        android:strokeColor="#B7A1F7"
+        android:strokeWidth="5.4"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- Luminous Buffer Precision Node in top-right orbital gap -->
+    <path
+        android:pathData="M67.8,34.3 m-4.0,0 a4.0,4.0 0 1,0 8.0,0 a4.0,4.0 0 1,0 -8.0,0"
+        android:fillColor="#D9CCFF" />
+
+    <!-- Left abstract neural crescent -->
+    <path
+        android:pathData="M45.8,63.3 A10,10 0 0,1 45.8,44.7"
+        android:strokeColor="#F4F0FF"
+        android:strokeWidth="4.6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- Right abstract neural crescent -->
+    <path
+        android:pathData="M62.2,44.7 A10,10 0 0,1 62.2,63.3"
+        android:strokeColor="#F4F0FF"
+        android:strokeWidth="4.6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- Subtle central balance line -->
+    <path
+        android:pathData="M54,47.5 L54,60.5"
+        android:strokeColor="#B7A1F7"
+        android:strokeWidth="3.4"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>
