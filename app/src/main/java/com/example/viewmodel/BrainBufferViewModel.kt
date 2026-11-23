@@ -1,18 +1,38 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.SystemClock
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.cloud.CloudSyncScheduler
+import com.example.cloud.SupabaseAuthClient
+import com.example.cloud.SupabaseAuthResult
+import com.example.cloud.SupabaseConfig
 import com.example.data.BrainBufferRepository
-import com.example.data.local.BrainBufferDatabase
-import com.example.data.local.UserPreferencesStore
 import com.example.domain.FocusTimerEngine
+import com.example.domain.PurposeMatchingEngine
+import com.example.domain.TemporaryAccessPolicy
 import com.example.model.ActivityCategory
 import com.example.model.ActivityLogRecord
 import com.example.model.AppUsageSuggestion
+import com.example.model.BlockedAppCategory
+import com.example.model.BlockedAppRule
+import com.example.model.BreakPlanConfig
+import com.example.model.CloudSyncState
+import com.example.model.CloudSyncStatus
+import com.example.model.InterventionEventRecord
+import com.example.model.InterventionEventType
+import com.example.model.PurposeSessionRecord
+import com.example.model.SelectedSessionApp
+import com.example.model.SessionPurposeCategory
+import com.example.model.TemporaryAppAccessSession
 import com.example.model.CustomActivityOption
 import com.example.model.DailyActivityStat
+import com.example.model.FamilyControlSettings
 import com.example.model.FocusMode
 import com.example.model.FocusSessionRecord
 import com.example.model.GardenPlant
@@ -20,6 +40,7 @@ import com.example.model.MindNote
 import com.example.model.MindNoteType
 import com.example.model.NotificationPreferences
 import com.example.model.PersistedTimerSnapshot
+import com.example.model.PhoneUsageReport
 import com.example.model.PlantSpecies
 import com.example.model.PlantStage
 import com.example.model.PreferredStudyTime
@@ -28,36 +49,60 @@ import com.example.model.StrictFocusPreset
 import com.example.model.StrictnessLevel
 import com.example.model.StudyActivityType
 import com.example.model.StudyLevel
+import com.example.model.StudyResource
+import com.example.model.StudyResourceType
 import com.example.model.StudyTask
 import com.example.model.Subject
 import com.example.model.SubjectStudySummary
+import com.example.model.SupabaseAuthSession
 import com.example.model.TaskPriority
 import com.example.model.ThemeMode
 import com.example.model.UpcomingDeadlineItem
+import com.example.model.UsagePeriodMode
 import com.example.model.UserPreferences
+import com.example.model.UserProfileRole
 import com.example.notifications.BrainBufferNotificationManager
 import com.example.performance.DevicePerformanceSignals
 import com.example.performance.PerformanceProfile
 import com.example.performance.PerformanceProfileEngine
 import com.example.performance.PerformanceProfileOverride
+import com.example.service.FocusScheduleWorker
 import com.example.service.FocusTimerService
+import com.example.service.StudyReminderWorker
 import com.example.system.AndroidDndBackend
 import com.example.system.AppUsageAwarenessHelper
+import com.example.system.BrainBufferHaptics
 import com.example.system.DndFocusController
+import com.example.system.HapticEvent
+import com.example.system.PhoneUsageAnalyticsEngine
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
 
+@Immutable
+data class ThemeShellState(
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val reducedMotionOverride: Boolean = false,
+    val performanceOverride: PerformanceProfileOverride = PerformanceProfileOverride.AUTO,
+    val isLoaded: Boolean = false,
+    val onboardingCompleted: Boolean = false
+)
+
+@Immutable
 data class FocusTimerUiState(
     val snapshot: PersistedTimerSnapshot = PersistedTimerSnapshot(),
     val remainingSeconds: Int = 25 * 60,
@@ -79,11 +124,20 @@ data class FocusTimerUiState(
     val isAodStyle: Boolean get() = snapshot.strictFocusAodStyle
     val focusGuardLevel: com.example.model.FocusGuardLevel get() = snapshot.focusGuardLevel
     val approvedAppLabel: String get() = snapshot.approvedAppLabel
+    val linkedTaskId: Long? get() = snapshot.linkedTaskId
+    val elapsedFocusedSeconds: Int get() = (totalSeconds - remainingSeconds).coerceIn(0, totalSeconds)
 
     val formattedTime: String
         get() {
             val mins = (remainingSeconds / 60).coerceAtLeast(0)
             val secs = (remainingSeconds % 60).coerceAtLeast(0)
+            return String.format(Locale.US, "%02d:%02d", mins, secs)
+        }
+
+    val formattedElapsedTime: String
+        get() {
+            val mins = (elapsedFocusedSeconds / 60).coerceAtLeast(0)
+            val secs = (elapsedFocusedSeconds % 60).coerceAtLeast(0)
             return String.format(Locale.US, "%02d:%02d", mins, secs)
         }
 }
@@ -100,9 +154,14 @@ private data class EphemeralUiState(
     val dismissedSuggestionPkg: String? = null,
     val unapprovedAppWarning: com.example.model.UnapprovedAppWarning? = null,
     val isRequestingActivity: Boolean = false,
-    val wasRecentlyCancelled: Boolean = false
+    val wasRecentlyCancelled: Boolean = false,
+    val hasUsageAccessPermission: Boolean = false,
+    val preselectedPurpose: SessionPurposeCategory? = null,
+    val expiredTempAccessPrompt: TemporaryAppAccessSession? = null,
+    val tempAccessNotice: String? = null
 )
 
+@Immutable
 data class BrainBufferUiState(
     val preferences: UserPreferences = UserPreferences(),
     val subjects: List<Subject> = emptyList(),
@@ -114,6 +173,22 @@ data class BrainBufferUiState(
     val strictFocusPresets: List<StrictFocusPreset> = emptyList(),
     val customActivities: List<CustomActivityOption> = emptyList(),
     val appCategoryMappings: List<com.example.model.AppCategoryMapping> = emptyList(),
+    val blockedApps: List<BlockedAppRule> = emptyList(),
+    val studyResources: List<StudyResource> = emptyList(),
+    val purposeSessions: List<PurposeSessionRecord> = emptyList(),
+    val interventionEvents: List<InterventionEventRecord> = emptyList(),
+    val activeTempAccess: TemporaryAppAccessSession? = null,
+    val expiredTempAccessPrompt: TemporaryAppAccessSession? = null,
+    val preselectedPurpose: SessionPurposeCategory? = null,
+    val tempAccessNotice: String? = null,
+    val manualBlockingSession: com.example.model.ManualBlockingSession = com.example.model.ManualBlockingSession(),
+    val temporaryAllowances: List<com.example.model.TemporaryAppAllowance> = emptyList(),
+    val hasUsageAccessPermission: Boolean = false,
+    val nowEpochMs: Long = System.currentTimeMillis(),
+    val phoneUsageReport: PhoneUsageReport = PhoneUsageReport(),
+    val cloudSync: CloudSyncState = CloudSyncState(
+        isConfigured = SupabaseConfig.isConfigured
+    ),
     val timer: FocusTimerUiState = FocusTimerUiState(),
     val quoteIndex: Int = 0,
     val pendingCelebration: SessionCelebration? = null,
@@ -128,35 +203,76 @@ data class BrainBufferUiState(
         refreshRateHz = 60f,
         isPowerSaveMode = false
     ),
-    val resolvedPerformanceProfile: PerformanceProfile = PerformanceProfile.BALANCED
+    val resolvedPerformanceProfile: PerformanceProfile = PerformanceProfile.BALANCED,
+    val todayEpochDay: Long = LocalDate.now().toEpochDay()
 ) {
-    val todayEpochDay: Long get() = LocalDate.now().toEpochDay()
+    val activeBlockedApps: List<BlockedAppRule>
+        get() = blockedApps.filter { it.isBlocked }
 
+    val activeTemporaryAllowances: List<com.example.model.TemporaryAppAllowance>
+        get() = temporaryAllowances.filter { it.isActive(nowEpochMs) }
+
+    val isManualBlockingEnforcing: Boolean
+        get() = manualBlockingSession.isEnforcing(nowEpochMs)
+
+    val isFocusBlockingEnforcing: Boolean
+        get() = timer.hasStarted &&
+            timer.isRunning &&
+            preferences.focusGuardSettings.blockDuringActiveFocus &&
+            blockedApps.any { it.isBlockedFor(timer.focusGuardLevel) }
+
+    val isScheduledWindowNow: Boolean
+        get() = FocusScheduleWorker.isWithinScheduledWindow(preferences.focusGuardSettings)
+
+    /**
+     * Honest status: NEVER returns true unless Android Usage Access is granted AND
+     * there is at least one blocked app AND an active blocking session or Focus Guard session is enforcing.
+     */
+    val isBlockingTrulyActive: Boolean
+        get() = hasUsageAccessPermission &&
+            activeBlockedApps.isNotEmpty() &&
+            (isManualBlockingEnforcing || isFocusBlockingEnforcing)
+
+    val blockingStatusHeadline: String
+        get() = when {
+            !hasUsageAccessPermission -> "Permission needed"
+            activeBlockedApps.isEmpty() -> "No apps selected"
+            isManualBlockingEnforcing -> "Blocking active"
+            isFocusBlockingEnforcing -> "Blocking during focus"
+            manualBlockingSession.isActive && manualBlockingSession.isPaused -> "Blocking paused"
+            isScheduledWindowNow -> "Scheduled window ready"
+            else -> "Ready to protect"
+        }
     val motivationalMessage: String
         get() = BrainBufferRepository.motivationalNotes[quoteIndex % BrainBufferRepository.motivationalNotes.size]
 
     val distractionTip: String
         get() = BrainBufferRepository.distractionTipFor(preferences.biggestDistractions)
 
-    val focusOnlySessions: List<FocusSessionRecord>
-        get() = sessions.filter { it.mode == FocusMode.FOCUS }
+    val focusOnlySessions: List<FocusSessionRecord> by lazy(LazyThreadSafetyMode.NONE) {
+        sessions.filter { it.mode == FocusMode.FOCUS }
+    }
 
-    val todayFocusMinutes: Int
-        get() = focusOnlySessions
+    val todayFocusMinutes: Int by lazy(LazyThreadSafetyMode.NONE) {
+        focusOnlySessions
             .filter { it.dateEpochDay == todayEpochDay }
             .sumOf { it.durationSeconds } / 60
+    }
 
-    val todaySessionsCount: Int
-        get() = focusOnlySessions.count { it.dateEpochDay == todayEpochDay }
+    val todaySessionsCount: Int by lazy(LazyThreadSafetyMode.NONE) {
+        focusOnlySessions.count { it.dateEpochDay == todayEpochDay }
+    }
 
     val todayTargetProgress: Float
         get() = (todayFocusMinutes.toFloat() / preferences.dailyTargetMinutes.coerceAtLeast(15)).coerceIn(0f, 1f)
 
-    val totalFocusMinutesAllTime: Int
-        get() = focusOnlySessions.sumOf { it.durationSeconds } / 60
+    val totalFocusMinutesAllTime: Int by lazy(LazyThreadSafetyMode.NONE) {
+        focusOnlySessions.sumOf { it.durationSeconds } / 60
+    }
 
-    val weeklyActivity: List<DailyActivityStat>
-        get() = BrainBufferRepository.buildWeeklyActivity(sessions, tasks)
+    val weeklyActivity: List<DailyActivityStat> by lazy(LazyThreadSafetyMode.NONE) {
+        BrainBufferRepository.buildWeeklyActivity(sessions, tasks, LocalDate.ofEpochDay(todayEpochDay))
+    }
 
     val weeklyFocusMinutes: Int
         get() = weeklyActivity.sumOf { it.focusMinutes }
@@ -164,25 +280,31 @@ data class BrainBufferUiState(
     val activeDaysThisWeek: Int
         get() = weeklyActivity.count { it.focusMinutes > 0 }
 
-    val currentStreakDays: Int
-        get() = BrainBufferRepository.computeCurrentStreakDays(sessions)
+    val currentStreakDays: Int by lazy(LazyThreadSafetyMode.NONE) {
+        BrainBufferRepository.computeCurrentStreakDays(sessions, LocalDate.ofEpochDay(todayEpochDay))
+    }
 
-    val bestStreakDays: Int
-        get() = BrainBufferRepository.computeBestStreakDays(sessions)
+    val bestStreakDays: Int by lazy(LazyThreadSafetyMode.NONE) {
+        BrainBufferRepository.computeBestStreakDays(sessions)
+    }
 
-    val bestDayMinutes: Int
-        get() = focusOnlySessions
+    val bestDayMinutes: Int by lazy(LazyThreadSafetyMode.NONE) {
+        focusOnlySessions
             .groupBy { it.dateEpochDay }
             .maxOfOrNull { (_, list) -> list.sumOf { it.durationSeconds } / 60 } ?: 0
+    }
 
-    val longestSessionMinutes: Int
-        get() = (focusOnlySessions.maxOfOrNull { it.durationSeconds } ?: 0) / 60
+    val longestSessionMinutes: Int by lazy(LazyThreadSafetyMode.NONE) {
+        (focusOnlySessions.maxOfOrNull { it.durationSeconds } ?: 0) / 60
+    }
 
-    val completedTasksCount: Int
-        get() = tasks.count { it.isCompleted }
+    val completedTasksCount: Int by lazy(LazyThreadSafetyMode.NONE) {
+        tasks.count { it.isCompleted }
+    }
 
-    val todayTasks: List<StudyTask>
-        get() = tasks.filter { it.dueDateEpochDay == todayEpochDay }
+    val todayTasks: List<StudyTask> by lazy(LazyThreadSafetyMode.NONE) {
+        tasks.filter { it.dueDateEpochDay == todayEpochDay }
+    }
 
     val activePlant: GardenPlant?
         get() = plants.firstOrNull { it.isActive } ?: plants.firstOrNull()
@@ -191,22 +313,22 @@ data class BrainBufferUiState(
      * Today's activity breakdown strictly separating Focused Study from Lectures,
      * Reading & Notes, Breaks, Gaming & Entertainment, and Other activities.
      */
-    val todayActivityLogs: List<ActivityLogRecord>
-        get() = activityLogs.filter { it.dateEpochDay == todayEpochDay }
+    val todayActivityLogs: List<ActivityLogRecord> by lazy(LazyThreadSafetyMode.NONE) {
+        activityLogs.filter { it.dateEpochDay == todayEpochDay }
+    }
 
-    val todayCategoryMinutes: Map<ActivityCategory, Int>
-        get() {
-            val result = linkedMapOf<ActivityCategory, Int>()
-            ActivityCategory.entries.forEach { cat ->
-                val fromLogs = todayActivityLogs.filter { it.category == cat }.sumOf { it.actualSeconds } / 60
-                result[cat] = if (cat == ActivityCategory.STUDY) {
-                    maxOf(fromLogs, todayFocusMinutes)
-                } else {
-                    fromLogs
-                }
+    val todayCategoryMinutes: Map<ActivityCategory, Int> by lazy(LazyThreadSafetyMode.NONE) {
+        val result = linkedMapOf<ActivityCategory, Int>()
+        ActivityCategory.entries.forEach { cat ->
+            val fromLogs = todayActivityLogs.filter { it.category == cat }.sumOf { it.actualSeconds } / 60
+            result[cat] = if (cat == ActivityCategory.STUDY) {
+                maxOf(fromLogs, todayFocusMinutes)
+            } else {
+                fromLogs
             }
-            return result
         }
+        result
+    }
 
     val todayGamingMinutes: Int
         get() = todayActivityLogs
@@ -250,87 +372,85 @@ data class BrainBufferUiState(
                 .sumOf { it.actualSeconds } / 60
         }
 
-    val weeklyCategoryMinutes: Map<ActivityCategory, Int>
-        get() {
-            val weekStart = todayEpochDay - 6
-            val recentLogs = activityLogs.filter { it.dateEpochDay >= weekStart }
-            val result = linkedMapOf<ActivityCategory, Int>()
-            ActivityCategory.entries.forEach { cat ->
-                val fromLogs = recentLogs.filter { it.category == cat }.sumOf { it.actualSeconds } / 60
-                // Ensure focused study reflects existing focus_sessions even if logged before v2 migration
-                result[cat] = if (cat == ActivityCategory.STUDY) {
-                    maxOf(fromLogs, weeklyFocusMinutes)
-                } else {
-                    fromLogs
-                }
+    val weeklyCategoryMinutes: Map<ActivityCategory, Int> by lazy(LazyThreadSafetyMode.NONE) {
+        val weekStart = todayEpochDay - 6
+        val recentLogs = activityLogs.filter { it.dateEpochDay >= weekStart }
+        val result = linkedMapOf<ActivityCategory, Int>()
+        ActivityCategory.entries.forEach { cat ->
+            val fromLogs = recentLogs.filter { it.category == cat }.sumOf { it.actualSeconds } / 60
+            // Ensure focused study reflects existing focus_sessions even if logged before v2 migration
+            result[cat] = if (cat == ActivityCategory.STUDY) {
+                maxOf(fromLogs, weeklyFocusMinutes)
+            } else {
+                fromLogs
             }
-            return result
         }
+        result
+    }
 
     /**
      * Real, locally computed insights derived strictly from recorded user sessions & activity logs.
      * Never invents data or displays mock percentages.
      */
-    val smartLocalInsights: List<String>
-        get() {
-            val insights = mutableListOf<String>()
-            val weekStart = todayEpochDay - 6
-            val prevWeekStart = todayEpochDay - 13
+    val smartLocalInsights: List<String> by lazy(LazyThreadSafetyMode.NONE) {
+        val insights = mutableListOf<String>()
+        val weekStart = todayEpochDay - 6
+        val prevWeekStart = todayEpochDay - 13
 
-            if (todaySessionsCount > 0) {
-                insights += "You completed $todaySessionsCount focused study ${if (todaySessionsCount == 1) "block" else "blocks"} ($todayFocusMinutes min) today."
-            } else {
-                insights += "No focused study blocks logged yet today — even a calm 15-minute start builds momentum."
-            }
-
-            // Daily target comparison
-            val remainingToTarget = (preferences.dailyTargetMinutes - todayFocusMinutes).coerceAtLeast(0)
-            if (todayFocusMinutes >= preferences.dailyTargetMinutes) {
-                insights += "You reached your ${preferences.dailyTargetMinutes} min daily study target today."
-            } else if (todayFocusMinutes > 0) {
-                insights += "$remainingToTarget min left to reach today's ${preferences.dailyTargetMinutes} min focus target."
-            }
-
-            // Subject week-over-week real comparison
-            val topThisWeek = focusOnlySessions
-                .filter { it.dateEpochDay >= weekStart }
-                .groupBy { it.subjectName }
-                .mapValues { (_, list) -> list.sumOf { it.durationSeconds } / 60 }
-                .maxByOrNull { it.value }
-            if (topThisWeek != null && topThisWeek.value > 0) {
-                val prevMins = focusOnlySessions
-                    .filter {
-                        it.dateEpochDay in prevWeekStart until weekStart &&
-                            it.subjectName.equals(topThisWeek.key, ignoreCase = true)
-                    }
-                    .sumOf { it.durationSeconds } / 60
-                if (prevMins > 0) {
-                    val delta = topThisWeek.value - prevMins
-                    if (delta > 0) {
-                        insights += "${topThisWeek.key} is up +$delta min compared to last week."
-                    } else if (delta < 0) {
-                        insights += "${topThisWeek.key} is ${-delta} min lighter than last week."
-                    } else {
-                        insights += "${topThisWeek.key} is holding steady at ${topThisWeek.value} min this week."
-                    }
-                } else {
-                    insights += "Most focused subject this week: ${topThisWeek.key} (${topThisWeek.value} min)."
-                }
-            }
-
-            // Breaks & Entertainment separation note
-            val todayBreaks = todayActivityLogs.filter { it.category == ActivityCategory.BREAK }.sumOf { it.actualMinutes }
-            val todayEntertainment = todayEntertainmentMinutes
-            if (todayBreaks > 0 || todayEntertainment > 0) {
-                val parts = buildList {
-                    if (todayBreaks > 0) add("$todayBreaks min breaks")
-                    if (todayEntertainment > 0) add("$todayEntertainment min gaming/entertainment")
-                }
-                insights += "Tracked separately today: ${parts.joinToString(" · ")} (never mixed into focused study)."
-            }
-
-            return insights.take(4)
+        if (todaySessionsCount > 0) {
+            insights += "You completed $todaySessionsCount focused study ${if (todaySessionsCount == 1) "block" else "blocks"} ($todayFocusMinutes min) today."
+        } else {
+            insights += "No focused study blocks logged yet today — even a calm 15-minute start builds momentum."
         }
+
+        // Daily target comparison
+        val remainingToTarget = (preferences.dailyTargetMinutes - todayFocusMinutes).coerceAtLeast(0)
+        if (todayFocusMinutes >= preferences.dailyTargetMinutes) {
+            insights += "You reached your ${preferences.dailyTargetMinutes} min daily study target today."
+        } else if (todayFocusMinutes > 0) {
+            insights += "$remainingToTarget min left to reach today's ${preferences.dailyTargetMinutes} min focus target."
+        }
+
+        // Subject week-over-week real comparison
+        val topThisWeek = focusOnlySessions
+            .filter { it.dateEpochDay >= weekStart }
+            .groupBy { it.subjectName }
+            .mapValues { (_, list) -> list.sumOf { it.durationSeconds } / 60 }
+            .maxByOrNull { it.value }
+        if (topThisWeek != null && topThisWeek.value > 0) {
+            val prevMins = focusOnlySessions
+                .filter {
+                    it.dateEpochDay in prevWeekStart until weekStart &&
+                        it.subjectName.equals(topThisWeek.key, ignoreCase = true)
+                }
+                .sumOf { it.durationSeconds } / 60
+            if (prevMins > 0) {
+                val delta = topThisWeek.value - prevMins
+                if (delta > 0) {
+                    insights += "${topThisWeek.key} is up +$delta min compared to last week."
+                } else if (delta < 0) {
+                    insights += "${topThisWeek.key} is ${-delta} min lighter than last week."
+                } else {
+                    insights += "${topThisWeek.key} is holding steady at ${topThisWeek.value} min this week."
+                }
+            } else {
+                insights += "Most focused subject this week: ${topThisWeek.key} (${topThisWeek.value} min)."
+            }
+        }
+
+        // Breaks & Entertainment separation note
+        val todayBreaks = todayActivityLogs.filter { it.category == ActivityCategory.BREAK }.sumOf { it.actualMinutes }
+        val todayEntertainment = todayEntertainmentMinutes
+        if (todayBreaks > 0 || todayEntertainment > 0) {
+            val parts = buildList {
+                if (todayBreaks > 0) add("$todayBreaks min breaks")
+                if (todayEntertainment > 0) add("$todayEntertainment min gaming/entertainment")
+            }
+            insights += "Tracked separately today: ${parts.joinToString(" · ")} (never mixed into focused study)."
+        }
+
+        insights.take(4)
+    }
 
     val todayEntertainmentMinutes: Int
         get() = todayActivityLogs
@@ -343,74 +463,74 @@ data class BrainBufferUiState(
     val isDailyEntertainmentLimitReached: Boolean
         get() = todayEntertainmentMinutes >= dailyEntertainmentLimitMinutes
 
-    val subjectSummaries: List<SubjectStudySummary>
-        get() {
-            val weekStart = todayEpochDay - 6
-            return subjects.map { subject ->
-                val matchingSessions = focusOnlySessions.filter {
-                    it.subjectId == subject.id ||
-                        (it.subjectId == null && it.subjectName.equals(subject.name, ignoreCase = true))
-                }
-                val weekMins = matchingSessions
-                    .filter { it.dateEpochDay >= weekStart }
-                    .sumOf { it.durationSeconds } / 60
-                val totalMins = matchingSessions.sumOf { it.durationSeconds } / 60
-                val subjectTasks = tasks.filter { it.subjectId == subject.id }
-                SubjectStudySummary(
-                    subject = subject,
-                    loggedMinutesThisWeek = weekMins,
-                    loggedMinutesTotal = totalMins,
-                    completedTasks = subjectTasks.count { it.isCompleted },
-                    totalTasks = subjectTasks.size
+    val subjectSummaries: List<SubjectStudySummary> by lazy(LazyThreadSafetyMode.NONE) {
+        val weekStart = todayEpochDay - 6
+        subjects.map { subject ->
+            val matchingSessions = focusOnlySessions.filter {
+                it.subjectId == subject.id ||
+                    (it.subjectId == null && it.subjectName.equals(subject.name, ignoreCase = true))
+            }
+            val weekMins = matchingSessions
+                .filter { it.dateEpochDay >= weekStart }
+                .sumOf { it.durationSeconds } / 60
+            val totalMins = matchingSessions.sumOf { it.durationSeconds } / 60
+            val subjectTasks = tasks.filter { it.subjectId == subject.id }
+            SubjectStudySummary(
+                subject = subject,
+                loggedMinutesThisWeek = weekMins,
+                loggedMinutesTotal = totalMins,
+                completedTasks = subjectTasks.count { it.isCompleted },
+                totalTasks = subjectTasks.size
+            )
+        }
+    }
+
+    val upcomingDeadlines: List<UpcomingDeadlineItem> by lazy(LazyThreadSafetyMode.NONE) {
+        val taskDeadlines = tasks
+            .filter { !it.isCompleted && it.dueDateEpochDay >= todayEpochDay }
+            .map { task ->
+                val subject = subjects.firstOrNull { it.id == task.subjectId }
+                UpcomingDeadlineItem(
+                    id = "task_${task.id}",
+                    title = task.title,
+                    subtitle = "${subject?.name ?: "Study Task"} · ${task.dueTimeLabel}",
+                    dateEpochDay = task.dueDateEpochDay,
+                    accentColor = subject?.accentColor ?: androidx.compose.ui.graphics.Color(0xFF7B5CFA),
+                    isExam = false
                 )
             }
-        }
 
-    val upcomingDeadlines: List<UpcomingDeadlineItem>
-        get() {
-            val taskDeadlines = tasks
-                .filter { !it.isCompleted && it.dueDateEpochDay >= todayEpochDay }
-                .map { task ->
-                    val subject = subjects.firstOrNull { it.id == task.subjectId }
-                    UpcomingDeadlineItem(
-                        id = "task_${task.id}",
-                        title = task.title,
-                        subtitle = "${subject?.name ?: "Study Task"} · ${task.dueTimeLabel}",
-                        dateEpochDay = task.dueDateEpochDay,
-                        accentColor = subject?.accentColor ?: androidx.compose.ui.graphics.Color(0xFF7B5CFA),
-                        isExam = false
-                    )
-                }
+        val examDeadlines = subjects
+            .filter { it.examDateEpochDay != null && it.examDateEpochDay >= todayEpochDay }
+            .map { subject ->
+                UpcomingDeadlineItem(
+                    id = "exam_${subject.id}",
+                    title = "${subject.name} Exam",
+                    subtitle = "Scheduled exam date",
+                    dateEpochDay = subject.examDateEpochDay!!,
+                    accentColor = subject.accentColor,
+                    isExam = true
+                )
+            }
 
-            val examDeadlines = subjects
-                .filter { it.examDateEpochDay != null && it.examDateEpochDay >= todayEpochDay }
-                .map { subject ->
-                    UpcomingDeadlineItem(
-                        id = "exam_${subject.id}",
-                        title = "${subject.name} Exam",
-                        subtitle = "Scheduled exam date",
-                        dateEpochDay = subject.examDateEpochDay!!,
-                        accentColor = subject.accentColor,
-                        isExam = true
-                    )
-                }
-
-            return (taskDeadlines + examDeadlines).sortedBy { it.dateEpochDay }
-        }
+        (taskDeadlines + examDeadlines).sortedBy { it.dateEpochDay }
+    }
 }
 
 class BrainBufferViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
-    private val repository = BrainBufferRepository(
-        database = BrainBufferDatabase.getInstance(appContext),
-        preferencesStore = UserPreferencesStore(appContext)
-    )
+    private val repository = BrainBufferRepository.getInstance(appContext)
 
     private val deviceSignals: DevicePerformanceSignals = PerformanceProfileEngine.inspectDevice(appContext)
-    private val ephemeral = MutableStateFlow(EphemeralUiState())
+    private val ephemeral = MutableStateFlow(
+        EphemeralUiState(
+            hasUsageAccessPermission = AppUsageAwarenessHelper.hasUsageAccessPermission(appContext)
+        )
+    )
     private var tickerJob: Job? = null
     private var isCompletingSession = false
+    private val completedSessionIdsInMemory = mutableSetOf<String>()
 
     private data class CoreDataBundle(
         val prefs: UserPreferences,
@@ -448,12 +568,89 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         ExtendedDataBundle(mindNotes, activityLogs, presets, customActs, timerSnapshot)
     }
 
+    private val authClient = SupabaseAuthClient()
+    private val phoneUsageReportFlow = MutableStateFlow(PhoneUsageReport())
+    private val cloudMetaFlow = MutableStateFlow(
+        Triple(false, false, Pair<String?, String?>(null, null))
+    ) // Triple(isSyncing, isAuthBusy, Pair(lastError, authNotice))
+
+    private data class FeatureDataBundle(
+        val appMappings: List<com.example.model.AppCategoryMapping>,
+        val blockedApps: List<BlockedAppRule>,
+        val studyResources: List<StudyResource>,
+        val authSession: SupabaseAuthSession,
+        val syncMeta: Pair<Int, Long>
+    )
+
+    private data class PurposeDataBundle(
+        val purposeSessions: List<PurposeSessionRecord>,
+        val interventionEvents: List<InterventionEventRecord>,
+        val activeTempAccess: TemporaryAppAccessSession?
+    )
+
+    private data class AnalyticsAndBlockingBundle(
+        val usageReport: PhoneUsageReport,
+        val cloudMeta: Triple<Boolean, Boolean, Pair<String?, String?>>,
+        val manualBlocking: com.example.model.ManualBlockingSession,
+        val tempAllowances: List<com.example.model.TemporaryAppAllowance>,
+        val purposeData: PurposeDataBundle
+    )
+
+    private val purposeDataFlow = combine(
+        repository.purposeSessions,
+        repository.interventionEvents,
+        repository.activeTempAccess
+    ) { pSessions, iEvents, activeTemp ->
+        PurposeDataBundle(pSessions, iEvents, activeTemp)
+    }
+
+    private val syncMetaFlow = combine(
+        repository.pendingOutboxCount,
+        repository.lastSyncedAtMs
+    ) { pending, lastSynced -> pending to lastSynced }
+
+    private val featureFlow = combine(
+        repository.appCategoryMappings,
+        repository.blockedApps,
+        repository.studyResources,
+        repository.authSession,
+        syncMetaFlow
+    ) { mappings, blocked, resources, authSession, syncMeta ->
+        FeatureDataBundle(mappings, blocked, resources, authSession, syncMeta)
+    }
+
+    private val analyticsAndCloudFlow = combine(
+        phoneUsageReportFlow,
+        cloudMetaFlow,
+        repository.manualBlockingSession,
+        repository.temporaryAllowances,
+        purposeDataFlow
+    ) { report, meta, manualBlocking, allowances, purposeData ->
+        AnalyticsAndBlockingBundle(report, meta, manualBlocking, allowances, purposeData)
+    }
+
     val uiState: StateFlow<BrainBufferUiState> = combine(
         coreFlow,
         extendedFlow,
-        repository.appCategoryMappings,
+        featureFlow,
+        analyticsAndCloudFlow,
         ephemeral
-    ) { core, ext, appMappings, local ->
+    ) { core, ext, feat, analyticsAndBlocking, local ->
+        val usageReport = analyticsAndBlocking.usageReport
+        val cloudMeta = analyticsAndBlocking.cloudMeta
+        val (isSyncing, isAuthBusy, errAndNotice) = cloudMeta
+        val (lastErr, authNotice) = errAndNotice
+        val (pendingCount, lastSyncedMs) = feat.syncMeta
+
+        val cloudStatus = when {
+            !SupabaseConfig.isConfigured -> CloudSyncStatus.UNCONFIGURED
+            !feat.authSession.isSignedIn -> CloudSyncStatus.OFFLINE_GUEST
+            isSyncing -> CloudSyncStatus.SYNCING
+            !lastErr.isNullOrBlank() -> CloudSyncStatus.ERROR
+            pendingCount > 0 -> CloudSyncStatus.PENDING
+            else -> CloudSyncStatus.IDLE
+        }
+
         val nowEpoch = local.nowEpochMs
         val nowElapsed = local.nowElapsedMs
         val remaining = FocusTimerEngine.remainingSeconds(ext.timerSnapshot, nowEpoch, nowElapsed)
@@ -480,7 +677,30 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             activityLogs = ext.activityLogs,
             strictFocusPresets = ext.strictFocusPresets,
             customActivities = ext.customActivities,
-            appCategoryMappings = appMappings,
+            appCategoryMappings = feat.appMappings,
+            blockedApps = feat.blockedApps,
+            studyResources = feat.studyResources,
+            purposeSessions = analyticsAndBlocking.purposeData.purposeSessions,
+            interventionEvents = analyticsAndBlocking.purposeData.interventionEvents,
+            activeTempAccess = analyticsAndBlocking.purposeData.activeTempAccess,
+            expiredTempAccessPrompt = local.expiredTempAccessPrompt,
+            preselectedPurpose = local.preselectedPurpose,
+            tempAccessNotice = local.tempAccessNotice,
+            manualBlockingSession = analyticsAndBlocking.manualBlocking,
+            temporaryAllowances = analyticsAndBlocking.tempAllowances,
+            hasUsageAccessPermission = local.hasUsageAccessPermission,
+            nowEpochMs = nowEpoch,
+            phoneUsageReport = usageReport,
+            cloudSync = CloudSyncState(
+                isConfigured = SupabaseConfig.isConfigured,
+                status = cloudStatus,
+                session = feat.authSession,
+                pendingOutboxCount = pendingCount,
+                lastSyncedAtMs = lastSyncedMs,
+                lastError = lastErr,
+                isAuthBusy = isAuthBusy,
+                authNotice = authNotice
+            ),
             timer = FocusTimerUiState(
                 snapshot = ext.timerSnapshot,
                 remainingSeconds = remaining,
@@ -500,51 +720,152 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000L),
         initialValue = BrainBufferUiState(
+            hasUsageAccessPermission = AppUsageAwarenessHelper.hasUsageAccessPermission(appContext),
             deviceSignals = deviceSignals,
             resolvedPerformanceProfile = PerformanceProfileEngine.resolveProfile(deviceSignals)
         )
     )
 
+    val themeShellState: StateFlow<ThemeShellState> = repository.preferences
+        .map { prefs ->
+            ThemeShellState(
+                themeMode = prefs.themeMode,
+                reducedMotionOverride = prefs.reducedMotionOverride,
+                performanceOverride = prefs.performanceOverride,
+                isLoaded = prefs.isLoaded,
+                onboardingCompleted = prefs.onboardingCompleted
+            )
+        }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = ThemeShellState()
+        )
+
     init {
         startMonotonicClockTicker()
-    }
-
-    /**
-     * Refreshes monotonic + wall-clock time every 500ms while running, and detects completion
-     * even if the timer finished while the app was minimized, locked, or recreated.
-     */
-    private fun startMonotonicClockTicker() {
-        tickerJob?.cancel()
-        tickerJob = viewModelScope.launch {
-            while (true) {
-                val nowEpoch = System.currentTimeMillis()
-                val nowElapsed = SystemClock.elapsedRealtime()
-                val snap = uiState.value.timer.snapshot
-                if (snap.runningSinceEpochMs != null) {
-                    ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed) }
-                    if (FocusTimerEngine.isCompleted(snap, nowEpoch, nowElapsed) && !isCompletingSession) {
-                        completeCurrentSession(autoCompleted = true)
-                    }
-                    delay(500L)
-                } else {
-                    delay(1000L)
-                }
+        viewModelScope.launch {
+            syncTimerOnResume()
+            if (AppUsageAwarenessHelper.hasUsageAccessPermission(appContext)) {
+                refreshPhoneUsageAnalytics()
+            }
+            if (SupabaseConfig.isConfigured && repository.getAuthSessionOnce().isSignedIn) {
+                syncCloudNow()
             }
         }
     }
 
     /**
-     * Called when Activity resumes so timer catches up immediately after screen-off / backgrounding.
+     * Reactive zero-idle clock ticker: sleeps completely with ZERO wakeups when both timer
+     * and manual blocking are idle/paused, and ticks cleanly once per second only while active.
+     */
+    private fun startMonotonicClockTicker() {
+        tickerJob?.cancel()
+        tickerJob = viewModelScope.launch {
+            combine(
+                repository.timerSnapshot.map { (it.runningSinceEpochMs != null) to it.sessionId },
+                repository.manualBlockingSession.map { it.isActive && !it.isPaused },
+                repository.activeTempAccess.map { it != null && it.endedAtEpochMs == null }
+            ) { timerKey, manualRunning, tempAccessActive ->
+                Triple(timerKey.first, tempAccessActive, manualRunning)
+            }
+                .distinctUntilChanged()
+                .collectLatest { (isTimerRunning, isTempAccessActive, isManualRunning) ->
+                    if (!isTimerRunning && !isTempAccessActive && !isManualRunning) return@collectLatest
+                    while (isActive) {
+                        val nowEpoch = System.currentTimeMillis()
+                        val nowElapsed = SystemClock.elapsedRealtime()
+                        val state = uiState.value
+                        val snap = state.timer.snapshot
+                        val activeTemp = state.activeTempAccess
+                        val manual = state.manualBlockingSession
+                        val manualStillActive = manual.isEnforcing(nowEpoch)
+                        if (manual.isActive && !manual.isPaused && manual.endsAtEpochMs > 0L && nowEpoch >= manual.endsAtEpochMs) {
+                            repository.saveManualBlockingSession(com.example.model.ManualBlockingSession())
+                        }
+                        if (activeTemp != null && activeTemp.endedAtEpochMs == null && activeTemp.isExpired(nowEpoch)) {
+                            if (ephemeral.value.expiredTempAccessPrompt?.id != activeTemp.id) {
+                                BrainBufferHaptics.perform(
+                                    context = appContext,
+                                    event = HapticEvent.DISTRACTION_ALERT,
+                                    enabled = state.preferences.hapticsEnabled &&
+                                        state.preferences.focusGuardSettings.vibrationEnabled
+                                )
+                                ephemeral.update { it.copy(expiredTempAccessPrompt = activeTemp) }
+                            }
+                        }
+                        val tempStillRunning = activeTemp != null && activeTemp.endedAtEpochMs == null && !activeTemp.isExpired(nowEpoch)
+                        if (snap.runningSinceEpochMs == null && !manualStillActive && !tempStillRunning) break
+                        ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed) }
+                        if (snap.runningSinceEpochMs != null &&
+                            FocusTimerEngine.isCompleted(snap, nowEpoch, nowElapsed) &&
+                            !isCompletingSession
+                        ) {
+                            completeCurrentSession(autoCompleted = true)
+                            if (!manualStillActive && !tempStillRunning) break
+                        }
+                        delay(1000L)
+                    }
+                }
+        }
+    }
+
+    /**
+     * Called when Activity resumes or after process recreation:
+     * - Restores timer safely via [FocusTimerEngine.restoreAfterProcessRecreation] (never restarts a completed timer).
+     * - Refreshes real Android Usage Access permission state.
+     * - Prunes expired temporary app allowances.
      */
     fun syncTimerOnResume() {
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
-        ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed) }
-        val snap = uiState.value.timer.snapshot
-        if (snap.runningSinceEpochMs != null && FocusTimerEngine.isCompleted(snap, nowEpoch, nowElapsed) && !isCompletingSession) {
-            completeCurrentSession(autoCompleted = true)
-        } else if (snap.hasStarted) {
-            FocusTimerService.syncWithSnapshot(appContext, snap)
+        val usageGranted = AppUsageAwarenessHelper.hasUsageAccessPermission(appContext)
+        ephemeral.update {
+            it.copy(
+                nowEpochMs = nowEpoch,
+                nowElapsedMs = nowElapsed,
+                hasUsageAccessPermission = usageGranted
+            )
+        }
+        viewModelScope.launch {
+            val snap = repository.getTimerSnapshotOnce()
+            val manual = repository.getManualBlockingSessionOnce()
+            val allowances = repository.getTemporaryAllowancesOnce()
+            val activeAllowances = allowances.filter { it.isActive(nowEpoch) }
+            if (activeAllowances.size != allowances.size) {
+                repository.saveTemporaryAllowances(activeAllowances)
+            }
+            if (manual.isActive && !manual.isPaused && manual.endsAtEpochMs > 0L && nowEpoch >= manual.endsAtEpochMs) {
+                repository.saveManualBlockingSession(com.example.model.ManualBlockingSession())
+            }
+
+            when (val restored = FocusTimerEngine.restoreAfterProcessRecreation(
+                snapshot = snap,
+                nowEpochMs = nowEpoch,
+                nowElapsedRealtimeMs = nowElapsed,
+                completedSessionIds = completedSessionIdsInMemory
+            )) {
+                is FocusTimerEngine.ProcessRestorationResult.NaturalCompletionPending -> {
+                    if (!isCompletingSession) {
+                        completeCurrentSession(autoCompleted = true)
+                    }
+                }
+                is FocusTimerEngine.ProcessRestorationResult.AlreadyCompleted -> {
+                    if (snap.hasStarted || snap.runningSinceEpochMs != null) {
+                        repository.saveTimerSnapshot(restored.snapshot)
+                    }
+                }
+                is FocusTimerEngine.ProcessRestorationResult.Running,
+                is FocusTimerEngine.ProcessRestorationResult.Paused -> {
+                    FocusTimerService.syncWithSnapshot(appContext, snap)
+                }
+                is FocusTimerEngine.ProcessRestorationResult.Idle -> {
+                    if (manual.isEnforcing(nowEpoch) && usageGranted) {
+                        FocusTimerService.syncForManualBlocking(appContext, manual)
+                    }
+                }
+            }
         }
     }
 
@@ -606,6 +927,68 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 otherDistraction = otherDistraction,
                 dailyTargetMinutes = dailyTargetMinutes
             )
+            onDone()
+        }
+    }
+
+    fun saveOnboardingCurrentStep(step: Int) {
+        viewModelScope.launch {
+            repository.saveOnboardingCurrentStep(step)
+        }
+    }
+
+    fun completeFullOnboarding(
+        userRole: UserProfileRole,
+        studentName: String,
+        avatarKey: String,
+        studyLevel: StudyLevel,
+        courseOrExamName: String,
+        subjects: List<Subject>,
+        studyGoals: Set<String>,
+        customGoal: String,
+        preferredFocusMinutes: Int,
+        shortBreakMinutes: Int,
+        longBreakMinutes: Int,
+        preferredStudyTime: PreferredStudyTime,
+        weeklyStudyDaysTarget: Int,
+        biggestDistractions: Set<String>,
+        otherDistraction: String,
+        dailyTargetMinutes: Int,
+        focusGuardSettings: com.example.model.FocusGuardSettings,
+        notificationPrefs: NotificationPreferences,
+        selectedBlockedApps: List<BlockedAppRule>,
+        appUsageAwarenessEnabled: Boolean,
+        onDone: () -> Unit
+    ) {
+        viewModelScope.launch {
+            repository.completeFullOnboarding(
+                userRole = userRole,
+                studentName = studentName,
+                avatarKey = avatarKey,
+                studyLevel = studyLevel,
+                courseOrExamName = courseOrExamName,
+                initialSubjects = subjects,
+                studyGoals = studyGoals,
+                customGoal = customGoal,
+                preferredFocusMinutes = preferredFocusMinutes,
+                shortBreakMinutes = shortBreakMinutes,
+                longBreakMinutes = longBreakMinutes,
+                preferredStudyTime = preferredStudyTime,
+                weeklyStudyDaysTarget = weeklyStudyDaysTarget,
+                biggestDistractions = biggestDistractions,
+                otherDistraction = otherDistraction,
+                dailyTargetMinutes = dailyTargetMinutes,
+                focusGuardSettings = focusGuardSettings,
+                notificationPrefs = notificationPrefs,
+                selectedBlockedApps = selectedBlockedApps,
+                appUsageAwarenessEnabled = appUsageAwarenessEnabled
+            )
+            FocusScheduleWorker.syncSchedule(appContext, focusGuardSettings)
+            StudyReminderWorker.syncSchedule(appContext, true, notificationPrefs)
+            com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
+            if (AppUsageAwarenessHelper.hasUsageStatsPermission(appContext)) {
+                refreshPhoneUsageAnalytics()
+            }
             onDone()
         }
     }
@@ -674,6 +1057,11 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     fun updateNotificationPreferences(notificationPrefs: NotificationPreferences) {
         viewModelScope.launch {
             repository.updateNotificationPreferences(notificationPrefs)
+            StudyReminderWorker.syncSchedule(
+                appContext,
+                uiState.value.preferences.notificationsEnabled,
+                notificationPrefs
+            )
             val snap = uiState.value.timer.snapshot
             if (snap.hasStarted) {
                 if (notificationPrefs.activeFocusEnabled && uiState.value.preferences.notificationsEnabled) {
@@ -709,12 +1097,63 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             enabledByUser = true,
             userMappings = mappings
         )
-        val warning = AppUsageAwarenessHelper.detectUnapprovedAppMismatch(
-            context = appContext,
-            enabledByUser = true,
-            snapshot = state.timer.snapshot,
-            userMappings = mappings
-        )
+        val nowEpoch = System.currentTimeMillis()
+        val snap = state.timer.snapshot
+        val warning = if (snap.hasStarted && snap.runningSinceEpochMs != null && !snap.isOnBreak) {
+            val fgPkg = AppUsageAwarenessHelper.queryCurrentForegroundPackage(
+                context = appContext,
+                enabledByUser = true,
+                nowEpochMs = nowEpoch
+            )
+            if (fgPkg != null) {
+                val fgLabel = runCatching {
+                    val pm = appContext.packageManager
+                    pm.getApplicationLabel(pm.getApplicationInfo(fgPkg, 0)).toString()
+                }.getOrDefault(fgPkg.substringAfterLast('.'))
+                when (
+                    val match = PurposeMatchingEngine.evaluateForegroundApp(
+                        observedPackage = fgPkg,
+                        observedAppLabel = fgLabel,
+                        snapshot = snap,
+                        activeTempAccess = state.activeTempAccess,
+                        nowEpochMs = nowEpoch,
+                        ownPackageName = appContext.packageName,
+                        gracePeriodSeconds = prefs.focusGuardSettings.gracePeriodSeconds,
+                        cooldownSeconds = prefs.focusGuardSettings.distractionCooldownSeconds,
+                        enforceGracePeriod = false
+                    )
+                ) {
+                    is PurposeMatchingEngine.MatchDecision.PotentialDistraction -> {
+                        val observedCat = AppUsageAwarenessHelper
+                            .matchPackageToSuggestion(fgPkg, mappings)
+                            ?.suggestedActivity
+                            ?.category
+                            ?: ActivityCategory.OTHER
+                        com.example.model.UnapprovedAppWarning(
+                            packageName = match.packageName,
+                            appDisplayName = match.appLabel,
+                            observedCategory = observedCat,
+                            message = match.message
+                        )
+                    }
+                    else -> null
+                }
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+        val isNewWarning = warning != null &&
+            warning.packageName != ephemeral.value.unapprovedAppWarning?.packageName
+        if (isNewWarning) {
+            BrainBufferHaptics.perform(
+                context = appContext,
+                event = HapticEvent.DISTRACTION_ALERT,
+                enabled = state.preferences.hapticsEnabled &&
+                    state.preferences.focusGuardSettings.vibrationEnabled
+            )
+        }
         ephemeral.update { current ->
             val filteredSuggestion = if (suggestion != null && suggestion.packageName == current.dismissedSuggestionPkg) {
                 current.appUsageSuggestion
@@ -744,6 +1183,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     fun updateFocusGuardSettings(settings: com.example.model.FocusGuardSettings) {
         viewModelScope.launch {
             repository.updateFocusGuardSettings(settings)
+            FocusScheduleWorker.syncSchedule(appContext, settings)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
         }
     }
@@ -778,6 +1218,11 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 soundEnabled = soundEnabled,
                 hapticsEnabled = hapticsEnabled,
                 reducedMotionOverride = reducedMotionOverride
+            )
+            StudyReminderWorker.syncSchedule(
+                appContext,
+                notificationsEnabled,
+                uiState.value.preferences.notificationPrefs
             )
             val snap = uiState.value.timer.snapshot
             if (snap.hasStarted) {
@@ -932,14 +1377,46 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         ephemeral.update { it.copy(isZenMode = !it.isZenMode) }
     }
 
+    private suspend fun syncStudySessionRecord(
+        snapshot: PersistedTimerSnapshot,
+        status: String,
+        nowEpochMs: Long,
+        nowElapsedMs: Long,
+        endTimeMs: Long? = null
+    ) {
+        if (snapshot.sessionId.isBlank()) return
+        val subjectName = uiState.value.subjects
+            .firstOrNull { it.id == snapshot.selectedSubjectId }?.name ?: "General Study"
+        val elapsedSec = FocusTimerEngine.actualFocusedSeconds(snapshot, nowEpochMs, nowElapsedMs)
+        repository.upsertStudySession(
+            sessionKey = snapshot.sessionId,
+            subjectId = snapshot.selectedSubjectId,
+            subjectName = subjectName,
+            startTimeMs = snapshot.activityStartedAtEpochMs ?: nowEpochMs,
+            endTimeMs = endTimeMs,
+            totalDurationSeconds = elapsedSec,
+            plannedDurationSeconds = snapshot.totalSeconds,
+            sessionStatus = status,
+            focusGuardLevel = snapshot.focusGuardLevel.name,
+            activityType = snapshot.activeActivityType.name
+        )
+    }
+
     fun startOrResumeTimer() {
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
         val snap = uiState.value.timer.snapshot
+        val hapticEvent = if (!snap.hasStarted) HapticEvent.SESSION_START else HapticEvent.PAUSE_OR_RESUME
+        BrainBufferHaptics.perform(
+            context = appContext,
+            event = hapticEvent,
+            enabled = uiState.value.preferences.hapticsEnabled
+        )
         val started = FocusTimerEngine.startOrResume(snap, nowEpoch, nowElapsed)
         ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed, wasRecentlyCancelled = false) }
         viewModelScope.launch {
             repository.saveTimerSnapshot(started)
+            syncStudySessionRecord(started, "RUNNING", nowEpoch, nowElapsed)
             FocusTimerService.syncWithSnapshot(appContext, started)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
         }
@@ -958,46 +1435,462 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             if (subjectId != null) snap.copy(selectedSubjectId = subjectId) else snap
         }
         val running = FocusTimerEngine.startOrResume(base, nowEpoch, nowElapsed)
+        BrainBufferHaptics.perform(
+            context = appContext,
+            event = HapticEvent.SESSION_START,
+            enabled = prefs.hapticsEnabled
+        )
         ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed, wasRecentlyCancelled = false) }
         viewModelScope.launch {
             repository.saveTimerSnapshot(running)
+            syncStudySessionRecord(running, "RUNNING", nowEpoch, nowElapsed)
             FocusTimerService.syncWithSnapshot(appContext, running)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
+        }
+    }
+
+    /**
+     * Launches a Focus session pre-configured with a Planner task's subject, title, and estimated duration.
+     */
+    fun startFocusForTask(task: StudyTask) {
+        val nowEpoch = System.currentTimeMillis()
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val durationMin = task.estimatedMinutes.coerceIn(10, 120)
+        val currentSnap = uiState.value.timer.snapshot
+        val configured = FocusTimerEngine.configureMode(currentSnap, FocusMode.FOCUS, durationMin).copy(
+            selectedSubjectId = task.subjectId,
+            sessionGoal = task.title.take(80),
+            linkedTaskId = task.id,
+            focusGuardLevel = uiState.value.preferences.focusGuardSettings.defaultLevel
+        )
+        val running = FocusTimerEngine.startOrResume(configured, nowEpoch, nowElapsed)
+        BrainBufferHaptics.perform(
+            context = appContext,
+            event = HapticEvent.SESSION_START,
+            enabled = uiState.value.preferences.hapticsEnabled
+        )
+        ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed, wasRecentlyCancelled = false) }
+        viewModelScope.launch {
+            repository.saveTimerSnapshot(running)
+            syncStudySessionRecord(running, "RUNNING", nowEpoch, nowElapsed)
+            FocusTimerService.syncWithSnapshot(appContext, running)
+            com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
+        }
+    }
+
+    fun selectLinkedTask(taskId: Long?) {
+        val snap = uiState.value.timer.snapshot
+        val task = uiState.value.tasks.firstOrNull { it.id == taskId }
+        viewModelScope.launch {
+            repository.saveTimerSnapshot(
+                snap.copy(
+                    linkedTaskId = task?.id,
+                    selectedSubjectId = task?.subjectId ?: snap.selectedSubjectId,
+                    sessionGoal = if (task != null && snap.sessionGoal.isBlank()) task.title.take(80) else snap.sessionGoal
+                )
+            )
+        }
+    }
+
+    fun markLinkedTaskCompleted(taskId: Long) {
+        val task = uiState.value.tasks.firstOrNull { it.id == taskId } ?: return
+        if (!task.isCompleted) {
+            toggleTaskCompletion(task.id)
         }
     }
 
     fun pauseTimer() {
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
+        BrainBufferHaptics.perform(
+            context = appContext,
+            event = HapticEvent.PAUSE_OR_RESUME,
+            enabled = uiState.value.preferences.hapticsEnabled
+        )
         val paused = FocusTimerEngine.pause(uiState.value.timer.snapshot, nowEpoch, nowElapsed)
         ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed) }
         viewModelScope.launch {
             repository.saveTimerSnapshot(paused)
+            syncStudySessionRecord(paused, "PAUSED", nowEpoch, nowElapsed)
             FocusTimerService.syncWithSnapshot(appContext, paused)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
         }
     }
 
     fun resetTimer() {
-        val prevSessionId = uiState.value.timer.snapshot.sessionId
-        val reset = FocusTimerEngine.reset(uiState.value.timer.snapshot)
+        val nowEpoch = System.currentTimeMillis()
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val prevSnap = uiState.value.timer.snapshot
+        val prevSessionId = prevSnap.sessionId
+        val reset = FocusTimerEngine.reset(prevSnap)
         BrainBufferNotificationManager.cancelDistractionWarningNotification(appContext)
         com.example.system.DistractionAlertCoordinator.clearSession(prevSessionId)
         ephemeral.update {
             it.copy(
-                nowEpochMs = System.currentTimeMillis(),
-                nowElapsedMs = SystemClock.elapsedRealtime(),
+                nowEpochMs = nowEpoch,
+                nowElapsedMs = nowElapsed,
                 wasRecentlyCancelled = true,
                 unapprovedAppWarning = null
             )
         }
         viewModelScope.launch {
+            if (prevSnap.hasStarted) {
+                syncStudySessionRecord(prevSnap, "CANCELLED", nowEpoch, nowElapsed, endTimeMs = nowEpoch)
+                repository.savePurposeSession(
+                    PurposeSessionRecord(
+                        sessionKey = prevSessionId.ifBlank { FocusTimerEngine.generateSessionId() },
+                        purposeCategory = prevSnap.purposeCategory,
+                        sessionName = prevSnap.sessionGoal.ifBlank { prevSnap.purposeCategory.label },
+                        allowedPackages = prevSnap.allowedPackages.toList(),
+                        allowedAppLabels = prevSnap.allowedAppLabels,
+                        plannedSeconds = prevSnap.totalSeconds,
+                        actualFocusedSeconds = 0,
+                        breakSeconds = prevSnap.accumulatedBreakSeconds,
+                        temporaryAccessSeconds = prevSnap.accumulatedTempAccessSeconds,
+                        distractionSeconds = prevSnap.accumulatedDistractionSeconds,
+                        interventionCount = prevSnap.interventionCount,
+                        status = PurposeSessionRecord.STATUS_CANCELLED,
+                        breakPlanMode = prevSnap.breakPlanMode,
+                        linkedTaskId = prevSnap.linkedTaskId,
+                        startedAtMs = prevSnap.sessionStartedAtEpochMs ?: nowEpoch,
+                        endedAtMs = nowEpoch,
+                        dateEpochDay = LocalDate.now().toEpochDay()
+                    )
+                )
+            }
+            repository.saveActiveTempAccess(null)
             repository.saveTimerSnapshot(reset)
             restoreDndIfNeeded()
             FocusTimerService.stopService(appContext)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
         }
     }
+
+    // region Purpose-Aware Focus Session Lifecycle
+
+    fun preselectPurposeForSetup(category: SessionPurposeCategory?) {
+        ephemeral.update { it.copy(preselectedPurpose = category) }
+    }
+
+    fun clearTempAccessNotice() {
+        ephemeral.update { it.copy(tempAccessNotice = null) }
+    }
+
+    fun startPurposeFocusSession(
+        purposeCategory: SessionPurposeCategory,
+        sessionName: String,
+        durationMinutes: Int,
+        selectedApps: List<SelectedSessionApp>,
+        breakPlan: BreakPlanConfig = BreakPlanConfig(),
+        linkedTaskId: Long? = null,
+        selectedSubjectId: Long? = null
+    ): Boolean {
+        val nowEpoch = System.currentTimeMillis()
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val started = FocusTimerEngine.startPurposeSession(
+            purposeCategory = purposeCategory,
+            sessionName = sessionName,
+            durationMinutes = durationMinutes,
+            selectedApps = selectedApps,
+            breakPlan = breakPlan,
+            linkedTaskId = linkedTaskId,
+            selectedSubjectId = selectedSubjectId,
+            nowEpochMs = nowEpoch,
+            nowElapsedRealtimeMs = nowElapsed
+        ) ?: return false
+
+        BrainBufferHaptics.perform(
+            context = appContext,
+            event = HapticEvent.SESSION_START,
+            enabled = uiState.value.preferences.hapticsEnabled
+        )
+        ephemeral.update {
+            it.copy(
+                nowEpochMs = nowEpoch,
+                nowElapsedMs = nowElapsed,
+                wasRecentlyCancelled = false,
+                pendingCelebration = null,
+                unapprovedAppWarning = null,
+                expiredTempAccessPrompt = null,
+                tempAccessNotice = null,
+                preselectedPurpose = null
+            )
+        }
+        viewModelScope.launch {
+            repository.saveActiveTempAccess(null)
+            repository.saveTimerSnapshot(started)
+            syncStudySessionRecord(started, "RUNNING", nowEpoch, nowElapsed)
+            FocusTimerService.syncWithSnapshot(appContext, started)
+            com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
+        }
+        return true
+    }
+
+    /**
+     * App Switch: pauses the parent focus session and grants a single timed temporary allowance
+     * for ONE chosen installed app, tracking temporary access strictly separate from focus time.
+     */
+    fun startTemporaryAppSwitch(
+        packageName: String,
+        appLabel: String,
+        durationMinutes: Int,
+        launchAfterGrant: Boolean = true
+    ): Boolean {
+        val nowEpoch = System.currentTimeMillis()
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val state = uiState.value
+        val snap = state.timer.snapshot
+        if (!snap.hasStarted) return false
+
+        val result = TemporaryAccessPolicy.startTemporaryAccess(
+            parentSessionId = snap.sessionId,
+            packageName = packageName,
+            appLabel = appLabel,
+            purposeLabel = snap.sessionGoal.ifBlank { snap.purposeCategory.label },
+            durationMinutes = durationMinutes,
+            nowEpochMs = nowEpoch,
+            existingActive = state.activeTempAccess,
+            ownPackageName = appContext.packageName
+        )
+        return when (result) {
+            is TemporaryAccessPolicy.StartResult.Rejected -> {
+                ephemeral.update { it.copy(tempAccessNotice = result.reason) }
+                false
+            }
+            is TemporaryAccessPolicy.StartResult.Started -> {
+                val pausedParent = FocusTimerEngine.pauseForTemporaryAccess(snap, nowEpoch, nowElapsed)
+                val replacedSeconds = result.replacedPrevious?.actualDurationSeconds(nowEpoch) ?: 0
+                val updatedParent = if (replacedSeconds > 0) {
+                    pausedParent.copy(
+                        accumulatedTempAccessSeconds = pausedParent.accumulatedTempAccessSeconds + replacedSeconds
+                    )
+                } else {
+                    pausedParent
+                }
+                BrainBufferHaptics.perform(
+                    context = appContext,
+                    event = HapticEvent.PAUSE_OR_RESUME,
+                    enabled = state.preferences.hapticsEnabled
+                )
+                ephemeral.update {
+                    it.copy(
+                        nowEpochMs = nowEpoch,
+                        nowElapsedMs = nowElapsed,
+                        unapprovedAppWarning = null,
+                        expiredTempAccessPrompt = null,
+                        tempAccessNotice = null
+                    )
+                }
+                viewModelScope.launch {
+                    repository.saveTimerSnapshot(updatedParent)
+                    repository.saveActiveTempAccess(result.session)
+                    repository.logInterventionEvent(
+                        InterventionEventRecord(
+                            sessionKey = snap.sessionId,
+                            eventType = InterventionEventType.APP_SWITCH,
+                            packageName = result.session.packageName,
+                            appLabel = result.session.appLabel,
+                            declaredPurpose = snap.purposeCategory.label,
+                            actionTaken = "TEMP_ALLOW",
+                            plannedSeconds = durationMinutes * 60,
+                            timestampMs = nowEpoch,
+                            dateEpochDay = LocalDate.now().toEpochDay()
+                        )
+                    )
+                    FocusTimerService.syncWithSnapshot(appContext, updatedParent)
+                    if (launchAfterGrant) {
+                        com.example.system.AppLauncherHelper.launchApp(appContext, result.session.packageName)
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    /**
+     * Requests a temporary access extension. Strictly enforces the 5-minute maximum AND single-use
+     * limit inside [TemporaryAccessPolicy.requestExtension].
+     */
+    fun requestTemporaryAccessExtension(requestedMinutes: Int = TemporaryAccessPolicy.MAX_EXTENSION_MINUTES): Boolean {
+        val nowEpoch = System.currentTimeMillis()
+        val currentTemp = uiState.value.activeTempAccess ?: uiState.value.expiredTempAccessPrompt ?: return false
+        return when (val result = TemporaryAccessPolicy.requestExtension(currentTemp, requestedMinutes, nowEpoch)) {
+            is TemporaryAccessPolicy.ExtensionResult.Granted -> {
+                ephemeral.update {
+                    it.copy(
+                        nowEpochMs = nowEpoch,
+                        expiredTempAccessPrompt = null,
+                        tempAccessNotice = "Extended ${result.updated.appLabel} by ${result.grantedMinutes} min (final extension)."
+                    )
+                }
+                viewModelScope.launch {
+                    repository.saveActiveTempAccess(result.updated)
+                    repository.logInterventionEvent(
+                        InterventionEventRecord(
+                            sessionKey = result.updated.parentSessionId,
+                            eventType = InterventionEventType.TEMP_ACCESS_EXTENDED,
+                            packageName = result.updated.packageName,
+                            appLabel = result.updated.appLabel,
+                            declaredPurpose = result.updated.purposeLabel,
+                            actionTaken = "EXTEND_5M",
+                            plannedSeconds = result.updated.originalAllowanceMinutes * 60,
+                            extensionSeconds = result.grantedMinutes * 60,
+                            timestampMs = nowEpoch,
+                            dateEpochDay = LocalDate.now().toEpochDay()
+                        )
+                    )
+                }
+                true
+            }
+            is TemporaryAccessPolicy.ExtensionResult.RejectedAlreadyExtended -> {
+                ephemeral.update {
+                    it.copy(tempAccessNotice = "The 5-minute extension has already been used. Return to your focus session.")
+                }
+                false
+            }
+            is TemporaryAccessPolicy.ExtensionResult.RejectedExceedsMaxLimit -> {
+                ephemeral.update {
+                    it.copy(tempAccessNotice = "Extensions are strictly limited to a maximum of ${result.maxAllowedMinutes} minutes.")
+                }
+                false
+            }
+            is TemporaryAccessPolicy.ExtensionResult.RejectedSessionClosed -> false
+        }
+    }
+
+    /**
+     * Closes the active temporary access, folds actual temporary access seconds separately (never into
+     * focus time), and resumes the parent focus session with its exact remaining time.
+     */
+    fun returnToFocusFromTemporaryAccess() {
+        val nowEpoch = System.currentTimeMillis()
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val state = uiState.value
+        val snap = state.timer.snapshot
+        val temp = state.activeTempAccess ?: state.expiredTempAccessPrompt
+        val closed = temp?.let { TemporaryAccessPolicy.closeTemporaryAccess(it, nowEpoch) }
+        val actualTempSec = closed?.actualDurationSeconds(nowEpoch) ?: 0
+        val resumed = if (snap.hasStarted) {
+            FocusTimerEngine.resumeFromTemporaryAccess(snap, actualTempSec, nowEpoch, nowElapsed)
+        } else {
+            snap
+        }
+        BrainBufferHaptics.perform(
+            context = appContext,
+            event = HapticEvent.PAUSE_OR_RESUME,
+            enabled = state.preferences.hapticsEnabled
+        )
+        ephemeral.update {
+            it.copy(
+                nowEpochMs = nowEpoch,
+                nowElapsedMs = nowElapsed,
+                expiredTempAccessPrompt = null,
+                unapprovedAppWarning = null,
+                tempAccessNotice = null
+            )
+        }
+        viewModelScope.launch {
+            repository.saveActiveTempAccess(null)
+            if (closed != null) {
+                repository.logInterventionEvent(
+                    InterventionEventRecord(
+                        sessionKey = closed.parentSessionId,
+                        eventType = InterventionEventType.TEMP_ACCESS_EXPIRED,
+                        packageName = closed.packageName,
+                        appLabel = closed.appLabel,
+                        declaredPurpose = closed.purposeLabel,
+                        actionTaken = "RETURN_TO_FOCUS",
+                        plannedSeconds = closed.originalAllowanceMinutes * 60,
+                        extensionSeconds = closed.extensionMinutesUsed * 60,
+                        actualSeconds = actualTempSec,
+                        timestampMs = nowEpoch,
+                        dateEpochDay = LocalDate.now().toEpochDay()
+                    )
+                )
+            }
+            if (snap.hasStarted) {
+                repository.saveTimerSnapshot(resumed)
+                FocusTimerService.syncWithSnapshot(appContext, resumed)
+            }
+        }
+    }
+
+    /**
+     * Switches declared purpose mid-session when the user's real intention changes.
+     */
+    fun switchActiveSessionPurpose(
+        newPurpose: SessionPurposeCategory,
+        newSessionName: String,
+        newAllowedApps: List<SelectedSessionApp>
+    ) {
+        val nowEpoch = System.currentTimeMillis()
+        val snap = uiState.value.timer.snapshot
+        if (!snap.hasStarted) return
+        val updated = PurposeMatchingEngine.switchPurpose(
+            current = snap,
+            newPurpose = newPurpose,
+            newSessionName = newSessionName,
+            newAllowedPackages = newAllowedApps.map { it.packageName }.toSet(),
+            newAllowedLabels = newAllowedApps.map { it.appLabel }
+        )
+        ephemeral.update {
+            it.copy(
+                nowEpochMs = nowEpoch,
+                unapprovedAppWarning = null,
+                tempAccessNotice = "Switched purpose to ${newPurpose.label}."
+            )
+        }
+        viewModelScope.launch {
+            repository.saveTimerSnapshot(updated)
+            repository.logInterventionEvent(
+                InterventionEventRecord(
+                    sessionKey = snap.sessionId,
+                    eventType = InterventionEventType.PURPOSE_SWITCHED,
+                    declaredPurpose = "${snap.purposeCategory.label} -> ${newPurpose.label}",
+                    actionTaken = "CHANGE_PURPOSE",
+                    timestampMs = nowEpoch,
+                    dateEpochDay = LocalDate.now().toEpochDay()
+                )
+            )
+            FocusTimerService.syncWithSnapshot(appContext, updated)
+        }
+    }
+
+    fun recordDistractionMismatchAction(
+        packageName: String,
+        appLabel: String,
+        actionTaken: String,
+        estimatedDistractionSeconds: Int = 30
+    ) {
+        val nowEpoch = System.currentTimeMillis()
+        val snap = uiState.value.timer.snapshot
+        val updatedSnap = if (snap.hasStarted) {
+            FocusTimerEngine.recordDistractionIntervention(snap, estimatedDistractionSeconds)
+        } else {
+            snap
+        }
+        ephemeral.update { it.copy(unapprovedAppWarning = null) }
+        viewModelScope.launch {
+            if (snap.hasStarted) {
+                repository.saveTimerSnapshot(updatedSnap)
+            }
+            repository.logInterventionEvent(
+                InterventionEventRecord(
+                    sessionKey = snap.sessionId,
+                    eventType = InterventionEventType.POTENTIAL_DISTRACTION,
+                    packageName = packageName,
+                    appLabel = appLabel,
+                    declaredPurpose = snap.purposeCategory.label,
+                    actionTaken = actionTaken,
+                    actualSeconds = estimatedDistractionSeconds,
+                    timestampMs = nowEpoch,
+                    dateEpochDay = LocalDate.now().toEpochDay()
+                )
+            )
+        }
+    }
+
+    // endregion
 
     /**
      * Switches to any built-in, controlled-access, or custom activity (PDF, Lecture, Reading,
@@ -1078,6 +1971,11 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun startBreakFromCurrent(breakMinutes: Int = uiState.value.preferences.focusGuardSettings.defaultBreakMinutes) {
+        BrainBufferHaptics.perform(
+            context = appContext,
+            event = HapticEvent.PAUSE_OR_RESUME,
+            enabled = uiState.value.preferences.hapticsEnabled
+        )
         switchActivity(
             activityType = StudyActivityType.SHORT_BREAK,
             activityLabel = "Taking a short break",
@@ -1097,6 +1995,11 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         val currentState = uiState.value
         val snap = currentState.timer.snapshot
         if (snap.pausedParentSession == null) return
+        BrainBufferHaptics.perform(
+            context = appContext,
+            event = HapticEvent.PAUSE_OR_RESUME,
+            enabled = currentState.preferences.hapticsEnabled
+        )
 
         viewModelScope.launch {
             val elapsedSec = FocusTimerEngine.actualFocusedSeconds(snap, nowEpoch, nowElapsed)
@@ -1183,6 +2086,8 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 dndActivated = DndFocusController.enableFocusDndIfGranted(
                     backend = AndroidDndBackend(appContext),
                     alreadySavedFilter = prefs.savedDndInterruptionFilter,
+                    allowImportantCalls = prefs.notificationPrefs.allowImportantCallsDuringFocus,
+                    allowAlarms = prefs.notificationPrefs.allowAlarmsDuringFocus,
                     savePreviousFilter = { prior ->
                         repository.updateSavedDndInterruptionFilter(prior)
                     }
@@ -1292,33 +2197,74 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /**
-     * Completes the current session using real elapsed focused seconds (never paused time).
-     * Strictly separates Focused Study (which grows the Garden & updates study streak) from
-     * Lectures, Reading, Breaks, and Gaming/Entertainment (which log cleanly into activity_logs).
-     * Deduplicated via `sessionKey` so FocusTimerService + ViewModel never double-record.
+     * Strictly completes a session ONLY when the timer has genuinely expired (remainingSeconds <= 0)
+     * and has never been completed before.
+     *
+     * Business-logic enforcement (CRITICAL):
+     * - Rejects calls when session has not started.
+     * - Rejects calls when remainingSeconds > 0 (eliminates instant-completion bypass bug).
+     * - Rejects duplicate calls for the same sessionId.
+     * - Persists exact completed duration (actual == planned), updates stats, and clears timer cleanly.
      */
-    fun completeCurrentSession(autoCompleted: Boolean = false) {
+    fun completeCurrentSession(autoCompleted: Boolean = true) {
         if (isCompletingSession) return
-        isCompletingSession = true
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
         val currentState = uiState.value
         val snap = currentState.timer.snapshot
 
+        val decision = FocusTimerEngine.evaluateNaturalCompletion(
+            snapshot = snap,
+            nowEpochMs = nowEpoch,
+            nowElapsedRealtimeMs = nowElapsed,
+            completedSessionIds = completedSessionIdsInMemory
+        )
+        if (decision !is FocusTimerEngine.SessionCompletionDecision.NaturalCompletion) {
+            return
+        }
+
+        isCompletingSession = true
+        completedSessionIdsInMemory.add(decision.sessionId)
+
         viewModelScope.launch {
             try {
-                val actualSeconds = if (autoCompleted) {
-                    snap.totalSeconds
-                } else {
-                    val elapsed = FocusTimerEngine.actualFocusedSeconds(snap, nowEpoch, nowElapsed)
-                    if (elapsed >= 60) elapsed else snap.totalSeconds
-                }
+                val actualSeconds = decision.actualSeconds
                 val selectedSubject = currentState.subjects.firstOrNull { it.id == snap.selectedSubjectId }
-                val subjectName = selectedSubject?.name ?: "General Study"
-                val sessionKey = snap.sessionId.ifBlank { FocusTimerEngine.generateSessionId() }
+                val subjectName = selectedSubject?.name ?: "General Focus"
+                val sessionKey = decision.sessionId
                 val todayEpoch = LocalDate.now().toEpochDay()
+                val linkedTask = decision.linkedTaskId?.let { id ->
+                    currentState.tasks.firstOrNull { it.id == id }
+                }
 
-                // Always record into activity_logs (deduplicated by sessionKey)
+                // Deduplicate against concurrent FocusTimerService completion
+                val isPurposeFocusSession = snap.mode == FocusMode.FOCUS && !snap.isOnBreak
+                val latestPersistedSnap = repository.getTimerSnapshotOnce()
+                if (latestPersistedSnap.lastCompletedSessionId == sessionKey ||
+                    (isPurposeFocusSession && repository.hasPurposeSession(sessionKey))
+                ) {
+                    return@launch
+                }
+
+                val openTempSec = currentState.activeTempAccess
+                    ?.takeIf { it.endedAtEpochMs == null }
+                    ?.actualDurationSeconds(nowEpoch)
+                    ?.coerceAtLeast(0)
+                    ?: 0
+
+                // Record durable study session lifecycle completion & activity log (deduplicated by sessionKey)
+                repository.upsertStudySession(
+                    sessionKey = sessionKey,
+                    subjectId = selectedSubject?.id,
+                    subjectName = subjectName,
+                    startTimeMs = snap.activityStartedAtEpochMs ?: (nowEpoch - actualSeconds * 1000L),
+                    endTimeMs = nowEpoch,
+                    totalDurationSeconds = actualSeconds,
+                    plannedDurationSeconds = decision.plannedSeconds,
+                    sessionStatus = "COMPLETED",
+                    focusGuardLevel = snap.focusGuardLevel.name,
+                    activityType = snap.activeActivityType.name
+                )
                 repository.recordActivityLog(
                     ActivityLogRecord(
                         sessionKey = sessionKey,
@@ -1328,7 +2274,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                         subjectId = selectedSubject?.id,
                         subjectName = subjectName,
                         subjectColorHex = selectedSubject?.colorHex ?: snap.activeActivityType.accentHex,
-                        plannedSeconds = snap.totalSeconds,
+                        plannedSeconds = decision.plannedSeconds,
                         actualSeconds = actualSeconds,
                         startedAtMs = snap.activityStartedAtEpochMs ?: (nowEpoch - actualSeconds * 1000L),
                         endedAtMs = nowEpoch,
@@ -1339,34 +2285,63 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 )
 
                 val isFocusedStudy = snap.activeActivityCategory.countsAsFocusedStudy && snap.mode == FocusMode.FOCUS
-                if (isFocusedStudy) {
+                if (isPurposeFocusSession) {
+                    repository.savePurposeSession(
+                        PurposeSessionRecord(
+                            sessionKey = sessionKey,
+                            purposeCategory = snap.purposeCategory,
+                            sessionName = snap.sessionGoal.ifBlank { subjectName },
+                            allowedPackages = snap.allowedPackages.toList(),
+                            allowedAppLabels = snap.allowedAppLabels,
+                            plannedSeconds = decision.plannedSeconds,
+                            actualFocusedSeconds = actualSeconds,
+                            breakSeconds = snap.accumulatedBreakSeconds,
+                            temporaryAccessSeconds = snap.accumulatedTempAccessSeconds + openTempSec,
+                            distractionSeconds = snap.accumulatedDistractionSeconds,
+                            interventionCount = snap.interventionCount,
+                            status = PurposeSessionRecord.STATUS_COMPLETED,
+                            breakPlanMode = snap.breakPlanMode,
+                            linkedTaskId = decision.linkedTaskId,
+                            startedAtMs = snap.sessionStartedAtEpochMs ?: (nowEpoch - actualSeconds * 1000L),
+                            endedAtMs = nowEpoch,
+                            dateEpochDay = todayEpoch
+                        )
+                    )
+                    repository.saveActiveTempAccess(null)
+                }
+                if (isFocusedStudy || isPurposeFocusSession) {
                     val record = FocusSessionRecord(
                         subjectId = selectedSubject?.id,
-                        subjectName = subjectName,
-                        subjectColorHex = selectedSubject?.colorHex ?: 0xFF7B5CFA,
+                        subjectName = snap.sessionGoal.ifBlank { subjectName },
+                        subjectColorHex = selectedSubject?.colorHex ?: snap.purposeCategory.accentHex,
                         durationSeconds = actualSeconds,
-                        plannedSeconds = snap.totalSeconds,
+                        plannedSeconds = decision.plannedSeconds,
                         sessionGoal = snap.sessionGoal.trim(),
                         mode = FocusMode.FOCUS,
                         completedAtMs = nowEpoch,
                         dateEpochDay = todayEpoch
                     )
 
-                    val previousStage = currentState.activePlant?.stage
-                    val (updatedPlant, unlockedDeco) = repository.recordFocusSessionAndGrowGarden(
+                    repository.recordFocusSessionAndGrowGarden(
                         session = record,
                         dailyTargetMinutes = currentState.preferences.dailyTargetMinutes,
                         allExistingSessions = currentState.sessions,
                         existingDecorations = currentState.preferences.unlockedDecorations,
                         sessionKey = sessionKey
                     )
-                    val newStage = PlantStage.fromSessions(updatedPlant.sessionsLogged)
 
-                    val resetSnap = FocusTimerEngine.reset(snap).copy(sessionGoal = "")
+                    val resetSnap = FocusTimerEngine.markCompletedAndReset(snap, sessionKey)
                     repository.saveTimerSnapshot(resetSnap)
                     restoreDndIfNeeded()
-                    FocusTimerService.stopService(appContext)
+                    if (!currentState.manualBlockingSession.isEnforcing(nowEpoch)) {
+                        FocusTimerService.stopService(appContext)
+                    }
 
+                    BrainBufferHaptics.perform(
+                        context = appContext,
+                        event = HapticEvent.SESSION_COMPLETE,
+                        enabled = currentState.preferences.hapticsEnabled
+                    )
                     if (autoCompleted) {
                         BrainBufferNotificationManager.postCompletionNotification(
                             context = appContext,
@@ -1391,26 +2366,26 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                             pendingCelebration = SessionCelebration(
                                 durationMinutes = (actualSeconds / 60).coerceAtLeast(1),
                                 subjectName = record.subjectName,
-                                plantName = updatedPlant.nickname,
-                                stageLabel = newStage.label,
-                                leveledUp = previousStage != null && newStage != previousStage,
-                                seedsEarned = 1,
-                                newlyUnlockedDecoration = unlockedDeco,
                                 activityLabel = snap.activeActivityLabel,
                                 activityCategory = snap.activeActivityCategory,
-                                canReturnToStudy = false
+                                canReturnToStudy = false,
+                                actualSeconds = actualSeconds,
+                                plannedSeconds = decision.plannedSeconds,
+                                endedEarly = false,
+                                linkedTaskId = linkedTask?.takeIf { t -> !t.isCompleted }?.id,
+                                linkedTaskTitle = linkedTask?.takeIf { t -> !t.isCompleted }?.title.orEmpty()
                             )
                         )
                     }
                 } else {
-                    // Switched activity or break finished: never mixes into focused study stats!
                     val hasParent = snap.pausedParentSession != null
                     if (hasParent) {
                         val frozenSnap = snap.copy(
                             accumulatedFocusedMs = snap.totalSeconds * 1000L,
                             runningSinceEpochMs = null,
                             runningSinceElapsedRealtimeMs = null,
-                            hasStarted = false
+                            hasStarted = false,
+                            lastCompletedSessionId = sessionKey
                         )
                         repository.saveTimerSnapshot(frozenSnap)
                     } else {
@@ -1418,13 +2393,20 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                             snap,
                             FocusMode.FOCUS,
                             currentState.preferences.preferredFocusMinutes
-                        )
+                        ).copy(lastCompletedSessionId = sessionKey)
                         repository.saveTimerSnapshot(focusReady)
                         restoreDndIfNeeded()
                     }
-                    FocusTimerService.stopService(appContext)
+                    if (!currentState.manualBlockingSession.isEnforcing(nowEpoch)) {
+                        FocusTimerService.stopService(appContext)
+                    }
                     com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
 
+                    BrainBufferHaptics.perform(
+                        context = appContext,
+                        event = HapticEvent.SESSION_COMPLETE,
+                        enabled = currentState.preferences.hapticsEnabled
+                    )
                     if (autoCompleted) {
                         BrainBufferNotificationManager.postCompletionNotification(
                             context = appContext,
@@ -1448,17 +2430,169 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                             pendingCelebration = SessionCelebration(
                                 durationMinutes = (actualSeconds / 60).coerceAtLeast(1),
                                 subjectName = subjectName,
-                                plantName = currentState.activePlant?.nickname ?: "Study Garden",
-                                stageLabel = snap.activeActivityCategory.label,
-                                leveledUp = false,
-                                seedsEarned = 0,
-                                newlyUnlockedDecoration = null,
                                 activityLabel = snap.activeActivityLabel,
                                 activityCategory = snap.activeActivityCategory,
-                                canReturnToStudy = hasParent
+                                canReturnToStudy = hasParent,
+                                actualSeconds = actualSeconds,
+                                plannedSeconds = decision.plannedSeconds,
+                                endedEarly = false
                             )
                         )
                     }
+                }
+            } finally {
+                isCompletingSession = false
+            }
+        }
+    }
+
+    /**
+     * Explicit, honest Early Termination flow:
+     * - Records ONLY actual elapsed focused seconds (never full planned duration, never paused time).
+     * - Marks study_sessions status as "ENDED_EARLY" (never "COMPLETED").
+     * - Never falsely awards full planned duration or auto-completes linked tasks.
+     */
+    fun endSessionEarly() {
+        if (isCompletingSession) return
+        val nowEpoch = System.currentTimeMillis()
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val currentState = uiState.value
+        val rawSnap = currentState.timer.snapshot
+        // Unwind any active Break to the parent Focus session and fold any open Temporary Access time
+        val effectiveSnap = FocusTimerEngine.resolveParentForEarlyExit(
+            snapshot = rawSnap,
+            activeTempAccess = currentState.activeTempAccess,
+            nowEpochMs = nowEpoch,
+            nowElapsedRealtimeMs = nowElapsed
+        )
+
+        val decision = FocusTimerEngine.evaluateEarlyTermination(
+            snapshot = effectiveSnap,
+            nowEpochMs = nowEpoch,
+            nowElapsedRealtimeMs = nowElapsed,
+            completedSessionIds = completedSessionIdsInMemory
+        )
+        isCompletingSession = true
+        if (decision.shouldPersist) {
+            completedSessionIdsInMemory.add(decision.sessionId)
+        }
+
+        viewModelScope.launch {
+            try {
+                val selectedSubject = currentState.subjects.firstOrNull { it.id == effectiveSnap.selectedSubjectId }
+                val subjectName = selectedSubject?.name ?: "General Focus"
+                val todayEpoch = LocalDate.now().toEpochDay()
+                val alreadySaved = decision.shouldPersist && repository.hasPurposeSession(decision.sessionId)
+
+                if (decision.shouldPersist && !alreadySaved) {
+                    repository.upsertStudySession(
+                        sessionKey = decision.sessionId,
+                        subjectId = selectedSubject?.id,
+                        subjectName = subjectName,
+                        startTimeMs = effectiveSnap.activityStartedAtEpochMs ?: (nowEpoch - decision.actualSeconds * 1000L),
+                        endTimeMs = nowEpoch,
+                        totalDurationSeconds = decision.actualSeconds,
+                        plannedDurationSeconds = decision.plannedSeconds,
+                        sessionStatus = decision.status, // "ENDED_EARLY"
+                        focusGuardLevel = effectiveSnap.focusGuardLevel.name,
+                        activityType = effectiveSnap.activeActivityType.name
+                    )
+                    repository.recordActivityLog(
+                        ActivityLogRecord(
+                            sessionKey = decision.sessionId,
+                            activityType = effectiveSnap.activeActivityType,
+                            activityLabel = "${effectiveSnap.activeActivityLabel} (Ended early)",
+                            category = effectiveSnap.activeActivityCategory,
+                            subjectId = selectedSubject?.id,
+                            subjectName = subjectName,
+                            subjectColorHex = selectedSubject?.colorHex ?: effectiveSnap.activeActivityType.accentHex,
+                            plannedSeconds = decision.plannedSeconds,
+                            actualSeconds = decision.actualSeconds,
+                            startedAtMs = effectiveSnap.activityStartedAtEpochMs ?: (nowEpoch - decision.actualSeconds * 1000L),
+                            endedAtMs = nowEpoch,
+                            dateEpochDay = todayEpoch,
+                            wasPlanned = false,
+                            notes = effectiveSnap.sessionGoal.trim()
+                        )
+                    )
+                    // Save honest PurposeSessionRecord with actual focused seconds only (ENDED_EARLY)
+                    if (effectiveSnap.mode == FocusMode.FOCUS && !effectiveSnap.isOnBreak) {
+                        repository.savePurposeSession(
+                            PurposeSessionRecord(
+                                sessionKey = decision.sessionId,
+                                purposeCategory = effectiveSnap.purposeCategory,
+                                sessionName = effectiveSnap.sessionGoal.ifBlank { subjectName },
+                                allowedPackages = effectiveSnap.allowedPackages.toList(),
+                                allowedAppLabels = effectiveSnap.allowedAppLabels,
+                                plannedSeconds = decision.plannedSeconds,
+                                actualFocusedSeconds = decision.actualSeconds,
+                                breakSeconds = effectiveSnap.accumulatedBreakSeconds,
+                                temporaryAccessSeconds = effectiveSnap.accumulatedTempAccessSeconds,
+                                distractionSeconds = effectiveSnap.accumulatedDistractionSeconds,
+                                interventionCount = effectiveSnap.interventionCount,
+                                status = PurposeSessionRecord.STATUS_ENDED_EARLY,
+                                breakPlanMode = effectiveSnap.breakPlanMode,
+                                linkedTaskId = effectiveSnap.linkedTaskId,
+                                startedAtMs = effectiveSnap.sessionStartedAtEpochMs ?: (nowEpoch - decision.actualSeconds * 1000L),
+                                endedAtMs = nowEpoch,
+                                dateEpochDay = todayEpoch
+                            )
+                        )
+                    }
+                    // Log actual focused minutes (>= 60s) honestly without crediting planned duration
+                    if (effectiveSnap.mode == FocusMode.FOCUS && !effectiveSnap.isOnBreak && decision.actualSeconds >= 60) {
+                        repository.recordFocusSessionAndGrowGarden(
+                            session = FocusSessionRecord(
+                                subjectId = selectedSubject?.id,
+                                subjectName = effectiveSnap.sessionGoal.ifBlank { subjectName },
+                                subjectColorHex = selectedSubject?.colorHex ?: effectiveSnap.purposeCategory.accentHex,
+                                durationSeconds = decision.actualSeconds,
+                                plannedSeconds = decision.plannedSeconds,
+                                sessionGoal = effectiveSnap.sessionGoal.trim(),
+                                mode = FocusMode.FOCUS,
+                                completedAtMs = nowEpoch,
+                                dateEpochDay = todayEpoch
+                            ),
+                            dailyTargetMinutes = currentState.preferences.dailyTargetMinutes,
+                            allExistingSessions = currentState.sessions,
+                            existingDecorations = currentState.preferences.unlockedDecorations,
+                            sessionKey = decision.sessionId
+                        )
+                    }
+                }
+
+                BrainBufferNotificationManager.cancelDistractionWarningNotification(appContext)
+                com.example.system.DistractionAlertCoordinator.clearSession(rawSnap.sessionId)
+                com.example.system.DistractionAlertCoordinator.clearSession(effectiveSnap.sessionId)
+                repository.saveActiveTempAccess(null)
+                val cleaned = FocusTimerEngine.markCompletedAndReset(effectiveSnap, decision.sessionId)
+                repository.saveTimerSnapshot(cleaned)
+                restoreDndIfNeeded()
+                if (!currentState.manualBlockingSession.isEnforcing(nowEpoch)) {
+                    FocusTimerService.stopService(appContext)
+                }
+                com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
+
+                ephemeral.update {
+                    it.copy(
+                        nowEpochMs = nowEpoch,
+                        nowElapsedMs = nowElapsed,
+                        wasRecentlyCancelled = true,
+                        unapprovedAppWarning = null,
+                        expiredTempAccessPrompt = null,
+                        pendingCelebration = if (decision.shouldPersist && !alreadySaved) {
+                            SessionCelebration(
+                                durationMinutes = decision.actualSeconds / 60,
+                                subjectName = effectiveSnap.sessionGoal.ifBlank { subjectName },
+                                activityLabel = effectiveSnap.activeActivityLabel,
+                                activityCategory = effectiveSnap.activeActivityCategory,
+                                canReturnToStudy = false,
+                                actualSeconds = decision.actualSeconds,
+                                plannedSeconds = decision.plannedSeconds,
+                                endedEarly = true
+                            )
+                        } else null
+                    )
                 }
             } finally {
                 isCompletingSession = false
@@ -1624,12 +2758,481 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         return root.toString(2)
     }
 
+    fun importStudyBackupJson(json: String, onResult: (Result<Int>) -> Unit) {
+        viewModelScope.launch {
+            val result = repository.importStudyBackupJson(json)
+            onResult(result)
+        }
+    }
+
     fun clearAllStudyData() {
         viewModelScope.launch {
             restoreDndIfNeeded()
             FocusTimerService.stopService(appContext)
             repository.clearAllStudyData()
         }
+    }
+
+    // region Phone Usage Analytics
+
+    fun refreshPhoneUsageAnalytics(
+        periodMode: UsagePeriodMode = phoneUsageReportFlow.value.periodMode,
+        customStartEpochDay: Long? = phoneUsageReportFlow.value.startEpochDay,
+        customEndEpochDay: Long? = phoneUsageReportFlow.value.endEpochDay
+    ) {
+        viewModelScope.launch {
+            phoneUsageReportFlow.update {
+                it.copy(
+                    isLoading = true,
+                    periodMode = periodMode,
+                    startEpochDay = customStartEpochDay ?: it.startEpochDay,
+                    endEpochDay = customEndEpochDay ?: it.endEpochDay
+                )
+            }
+            val report = PhoneUsageAnalyticsEngine.computeReport(
+                context = appContext,
+                periodMode = periodMode,
+                customStartEpochDay = customStartEpochDay,
+                customEndEpochDay = customEndEpochDay
+            )
+            phoneUsageReportFlow.value = report
+        }
+    }
+
+    fun setUsagePeriodMode(mode: UsagePeriodMode) {
+        val today = LocalDate.now()
+        val (start, end) = when (mode) {
+            UsagePeriodMode.LAST_7_DAYS -> today.minusDays(6).toEpochDay() to today.toEpochDay()
+            UsagePeriodMode.LAST_30_DAYS -> today.minusDays(29).toEpochDay() to today.toEpochDay()
+            UsagePeriodMode.SINGLE_DAY -> today.toEpochDay() to today.toEpochDay()
+            UsagePeriodMode.CUSTOM_RANGE -> phoneUsageReportFlow.value.startEpochDay to phoneUsageReportFlow.value.endEpochDay
+        }
+        refreshPhoneUsageAnalytics(mode, start, end)
+    }
+
+    fun setUsageCustomDateRange(startEpochDay: Long, endEpochDay: Long, mode: UsagePeriodMode = UsagePeriodMode.CUSTOM_RANGE) {
+        refreshPhoneUsageAnalytics(mode, startEpochDay, endEpochDay)
+    }
+
+    // endregion
+
+    // region Focus Guard Blocklists & Study-Only YouTube Resources
+
+    fun upsertBlockedApp(rule: BlockedAppRule) {
+        viewModelScope.launch {
+            repository.upsertBlockedApp(rule)
+        }
+    }
+
+    fun removeBlockedApp(packageName: String) {
+        viewModelScope.launch {
+            repository.deleteBlockedApp(packageName)
+        }
+    }
+
+    fun toggleBlockedAppsForCategory(
+        category: BlockedAppCategory,
+        installedApps: List<com.example.system.InstalledAppChoice>,
+        enable: Boolean
+    ) {
+        viewModelScope.launch {
+            val matching = installedApps.filter {
+                PhoneUsageAnalyticsEngine.suggestBlockedCategory(it.packageName, it.label) == category
+            }
+            matching.forEach { app ->
+                if (enable) {
+                    repository.upsertBlockedApp(
+                        BlockedAppRule(
+                            packageName = app.packageName,
+                            appLabel = app.label,
+                            category = category,
+                            blockInNormal = false,
+                            blockInHigh = true,
+                            blockInCustom = true,
+                            isBlocked = true
+                        )
+                    )
+                } else {
+                    repository.deleteBlockedApp(app.packageName)
+                }
+            }
+        }
+    }
+
+    fun addStudyResource(
+        title: String,
+        url: String,
+        type: StudyResourceType,
+        subjectId: Long?,
+        channelName: String
+    ) {
+        val cleanTitle = title.trim()
+        val cleanUrl = url.trim()
+        if (cleanTitle.isBlank() || !com.example.system.AppLauncherHelper.isValidStudyUrl(cleanUrl)) return
+        viewModelScope.launch {
+            repository.addStudyResource(
+                StudyResource(
+                    subjectId = subjectId,
+                    title = cleanTitle.take(100),
+                    url = cleanUrl,
+                    resourceType = type,
+                    channelName = channelName.trim().take(60)
+                )
+            )
+        }
+    }
+
+    fun markStudyResourceOpened(id: Long) {
+        viewModelScope.launch { repository.markStudyResourceOpened(id) }
+    }
+
+    fun deleteStudyResource(id: Long) {
+        viewModelScope.launch { repository.deleteStudyResource(id) }
+    }
+
+    // region Standalone Blocking Sessions & Temporary App Allowances (Block Tab)
+
+    fun startManualBlockingSession(durationMinutes: Int) {
+        val now = System.currentTimeMillis()
+        val clampedMin = durationMinutes.coerceIn(5, 480)
+        val session = com.example.model.ManualBlockingSession(
+            isActive = true,
+            isPaused = false,
+            startedAtEpochMs = now,
+            endsAtEpochMs = now + clampedMin * 60_000L,
+            remainingOnPauseMs = 0L
+        )
+        ephemeral.update {
+            it.copy(
+                nowEpochMs = now,
+                hasUsageAccessPermission = AppUsageAwarenessHelper.hasUsageAccessPermission(appContext)
+            )
+        }
+        viewModelScope.launch {
+            repository.saveManualBlockingSession(session)
+            if (AppUsageAwarenessHelper.hasUsageAccessPermission(appContext)) {
+                FocusTimerService.syncForManualBlocking(appContext, session)
+            }
+        }
+    }
+
+    fun pauseManualBlockingSession() {
+        val now = System.currentTimeMillis()
+        val current = uiState.value.manualBlockingSession
+        if (!current.isActive || current.isPaused) return
+        val remainingMs = (current.endsAtEpochMs - now).coerceAtLeast(0L)
+        val paused = current.copy(isPaused = true, remainingOnPauseMs = remainingMs)
+        viewModelScope.launch {
+            repository.saveManualBlockingSession(paused)
+            if (!uiState.value.timer.hasStarted) {
+                FocusTimerService.stopService(appContext)
+            }
+        }
+    }
+
+    fun resumeManualBlockingSession() {
+        val now = System.currentTimeMillis()
+        val current = uiState.value.manualBlockingSession
+        if (!current.isActive || !current.isPaused) return
+        val resumed = current.copy(
+            isPaused = false,
+            endsAtEpochMs = if (current.remainingOnPauseMs > 0L) now + current.remainingOnPauseMs else 0L,
+            remainingOnPauseMs = 0L
+        )
+        ephemeral.update { it.copy(nowEpochMs = now) }
+        viewModelScope.launch {
+            repository.saveManualBlockingSession(resumed)
+            if (AppUsageAwarenessHelper.hasUsageAccessPermission(appContext)) {
+                FocusTimerService.syncForManualBlocking(appContext, resumed)
+            }
+        }
+    }
+
+    fun endManualBlockingSession() {
+        viewModelScope.launch {
+            repository.saveManualBlockingSession(com.example.model.ManualBlockingSession())
+            if (!uiState.value.timer.hasStarted) {
+                FocusTimerService.stopService(appContext)
+            }
+        }
+    }
+
+    fun allowAppTemporarily(
+        packageName: String,
+        appLabel: String,
+        reason: String,
+        durationMinutes: Int
+    ) {
+        val cleanPkg = packageName.trim()
+        if (cleanPkg.isBlank()) return
+        val now = System.currentTimeMillis()
+        val clampedMins = durationMinutes.coerceIn(1, 60)
+        val newEntry = com.example.model.TemporaryAppAllowance(
+            packageName = cleanPkg,
+            appLabel = appLabel.trim().ifBlank { cleanPkg },
+            reason = reason.trim().ifBlank { "Temporary exception" }.take(80),
+            grantedAtEpochMs = now,
+            expiresAtEpochMs = now + clampedMins * 60_000L
+        )
+        ephemeral.update { it.copy(nowEpochMs = now) }
+        viewModelScope.launch {
+            val current = repository.getTemporaryAllowancesOnce()
+                .filter { it.isActive(now) && !it.packageName.equals(cleanPkg, ignoreCase = true) }
+            repository.saveTemporaryAllowances(current + newEntry)
+        }
+    }
+
+    fun revokeTemporaryAllowance(packageName: String) {
+        val now = System.currentTimeMillis()
+        ephemeral.update { it.copy(nowEpochMs = now) }
+        viewModelScope.launch {
+            val updated = repository.getTemporaryAllowancesOnce()
+                .filter { it.isActive(now) && !it.packageName.equals(packageName, ignoreCase = true) }
+            repository.saveTemporaryAllowances(updated)
+        }
+    }
+
+    // endregion
+
+    // endregion
+
+    // region Analytics Privacy & Transparent Family / Parent Controls
+
+    fun setCloudUsageSummarySyncEnabled(enabled: Boolean) {
+        viewModelScope.launch { repository.updateCloudUsageSummarySyncEnabled(enabled) }
+    }
+
+    fun updateFamilyControlSettings(settings: FamilyControlSettings) {
+        viewModelScope.launch { repository.updateFamilyControlSettings(settings) }
+    }
+
+    // endregion
+
+    // region Supabase Authentication, Offline-First Sync & Account Isolation
+
+    fun clearAuthNotice() {
+        cloudMetaFlow.update { Triple(it.first, it.second, Pair(null, null)) }
+    }
+
+    fun signUpWithEmail(email: String, password: String, displayName: String, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            cloudMetaFlow.update { Triple(it.first, true, Pair(null, null)) }
+            when (val res = authClient.signUp(email, password, displayName)) {
+                is SupabaseAuthResult.Success -> {
+                    val session = res.data
+                    if (session.isSignedIn) {
+                        handleAuthenticatedSession(session)
+                        cloudMetaFlow.update { Triple(false, false, Pair(null, res.notice ?: "Signed in and syncing your Brain Buffer data.")) }
+                        onSuccess()
+                    } else {
+                        cloudMetaFlow.update { Triple(false, false, Pair(null, res.notice ?: "Check your email to confirm your account.")) }
+                    }
+                }
+                is SupabaseAuthResult.Error -> {
+                    cloudMetaFlow.update { Triple(false, false, Pair(res.message, null)) }
+                }
+            }
+        }
+    }
+
+    fun signInWithEmail(email: String, password: String, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            cloudMetaFlow.update { Triple(it.first, true, Pair(null, null)) }
+            when (val res = authClient.signInWithPassword(email, password)) {
+                is SupabaseAuthResult.Success -> {
+                    handleAuthenticatedSession(res.data)
+                    cloudMetaFlow.update { Triple(false, false, Pair(null, "Welcome back! Syncing your cloud workspace…")) }
+                    onSuccess()
+                }
+                is SupabaseAuthResult.Error -> {
+                    cloudMetaFlow.update { Triple(false, false, Pair(res.message, null)) }
+                }
+            }
+        }
+    }
+
+    fun resetPasswordEmail(email: String) {
+        viewModelScope.launch {
+            cloudMetaFlow.update { Triple(it.first, true, Pair(null, null)) }
+            when (val res = authClient.resetPassword(email)) {
+                is SupabaseAuthResult.Success -> {
+                    cloudMetaFlow.update { Triple(false, false, Pair(null, res.notice)) }
+                }
+                is SupabaseAuthResult.Error -> {
+                    cloudMetaFlow.update { Triple(false, false, Pair(res.message, null)) }
+                }
+            }
+        }
+    }
+
+    fun resendVerificationEmail(email: String) {
+        viewModelScope.launch {
+            cloudMetaFlow.update { Triple(it.first, true, Pair(null, null)) }
+            when (val res = authClient.resendVerificationEmail(email)) {
+                is SupabaseAuthResult.Success -> {
+                    cloudMetaFlow.update { Triple(false, false, Pair(null, res.notice)) }
+                }
+                is SupabaseAuthResult.Error -> {
+                    cloudMetaFlow.update { Triple(false, false, Pair(res.message, null)) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Handles incoming `com.aistudio.brainbuffer.vkrqmx://auth-callback` deep links for:
+     * - Implicit fragment `#access_token=...&refresh_token=...` (email verification & password recovery)
+     * - Auth error responses (`error_description` / `error`)
+     */
+    fun handleAuthCallbackUri(uri: Uri) {
+        viewModelScope.launch {
+            val queryError = uri.getQueryParameter("error_description")
+                ?: uri.getQueryParameter("error")
+            val fragmentParams = parseUrlEncodedParams(uri.fragment.orEmpty())
+            val fragmentError = fragmentParams["error_description"] ?: fragmentParams["error"]
+            val errorText = queryError ?: fragmentError
+            if (!errorText.isNullOrBlank()) {
+                cloudMetaFlow.update {
+                    Triple(false, false, Pair("Sign-in did not complete: $errorText", null))
+                }
+                return@launch
+            }
+
+            val accessToken = fragmentParams["access_token"].orEmpty()
+            val refreshToken = fragmentParams["refresh_token"].orEmpty()
+            val expiresIn = fragmentParams["expires_in"]?.toLongOrNull() ?: 3600L
+            val callbackType = fragmentParams["type"].orEmpty()
+
+            if (accessToken.isNotBlank()) {
+                cloudMetaFlow.update { Triple(it.first, true, Pair(null, null)) }
+                val expiresAt = (System.currentTimeMillis() / 1000L) + expiresIn
+                when (val userRes = authClient.fetchUser(accessToken, refreshToken, expiresAt)) {
+                    is SupabaseAuthResult.Success -> {
+                        handleAuthenticatedSession(userRes.data)
+                        val notice = when (callbackType.lowercase()) {
+                            "signup" -> "Email verified! Your Brain Buffer cloud workspace is now syncing."
+                            "recovery" -> "Recovery link verified. You're signed back into your account."
+                            else -> "Signed in and syncing your Brain Buffer workspace."
+                        }
+                        cloudMetaFlow.update { Triple(false, false, Pair(null, notice)) }
+                    }
+                    is SupabaseAuthResult.Error -> {
+                        cloudMetaFlow.update { Triple(false, false, Pair(userRes.message, null)) }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun parseUrlEncodedParams(raw: String): Map<String, String> {
+        if (raw.isBlank()) return emptyMap()
+        return raw.split("&").mapNotNull { pair ->
+            val idx = pair.indexOf('=')
+            if (idx <= 0) null
+            else {
+                val k = java.net.URLDecoder.decode(pair.substring(0, idx), "UTF-8")
+                val v = java.net.URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
+                k to v
+            }
+        }.toMap()
+    }
+
+    fun signOutCloud(clearLocalDeviceData: Boolean = true) {
+        viewModelScope.launch {
+            cloudMetaFlow.update { Triple(it.first, true, Pair(null, null)) }
+            CloudSyncScheduler.cancelSync(appContext)
+            val current = repository.getAuthSessionOnce()
+            authClient.signOut(current.accessToken)
+            repository.clearAuthSession()
+            if (clearLocalDeviceData) {
+                repository.clearLocalTablesForAccountSwitch()
+                repository.updateActiveAccountOwnerId("")
+            }
+            cloudMetaFlow.update {
+                Triple(false, false, Pair(null, "Signed out. Your cloud backup stays safe in Supabase."))
+            }
+        }
+    }
+
+    fun deleteCloudAccount(onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            cloudMetaFlow.update { Triple(it.first, true, Pair(null, null)) }
+            var session = repository.getAuthSessionOnce()
+            if (session.isExpired() && session.refreshToken.isNotBlank()) {
+                val refreshed = authClient.refreshSession(session.refreshToken)
+                if (refreshed is SupabaseAuthResult.Success) {
+                    session = refreshed.data
+                    repository.saveAuthSession(session)
+                }
+            }
+            when (val res = authClient.requestAccountDeletion(session.accessToken)) {
+                is SupabaseAuthResult.Success -> {
+                    CloudSyncScheduler.cancelSync(appContext)
+                    repository.clearAuthSession()
+                    repository.clearLocalTablesForAccountSwitch()
+                    repository.updateActiveAccountOwnerId("")
+                    val msg = res.notice ?: "Account deleted permanently."
+                    cloudMetaFlow.update { Triple(false, false, Pair(null, msg)) }
+                    onResult(true, msg)
+                }
+                is SupabaseAuthResult.Error -> {
+                    cloudMetaFlow.update { Triple(false, false, Pair(res.message, null)) }
+                    onResult(false, res.message)
+                }
+            }
+        }
+    }
+
+    fun syncCloudNow() {
+        viewModelScope.launch {
+            val session = repository.getAuthSessionOnce()
+            if (!SupabaseConfig.isConfigured || !session.isSignedIn) return@launch
+            cloudMetaFlow.update { Triple(true, it.second, Pair(null, it.third.second)) }
+            val outcome = repository.syncManager.syncAll(
+                currentSession = session,
+                usageReportForOptInSummary = phoneUsageReportFlow.value
+            )
+            outcome.refreshedSession?.let { repository.saveAuthSession(it) }
+            when {
+                outcome.alreadyRunning -> {
+                    cloudMetaFlow.update { Triple(false, it.second, it.third) }
+                }
+                outcome.success -> {
+                    repository.updateLastSyncedAtMs(System.currentTimeMillis())
+                    cloudMetaFlow.update { Triple(false, false, Pair(null, null)) }
+                }
+                else -> {
+                    if (!outcome.requiresReauth) {
+                        CloudSyncScheduler.scheduleSync(appContext)
+                    }
+                    cloudMetaFlow.update { Triple(false, false, Pair(outcome.errorMessage, null)) }
+                }
+            }
+        }
+    }
+
+    private suspend fun handleAuthenticatedSession(session: SupabaseAuthSession) {
+        val previousOwner = repository.getPreferencesOnce().activeAccountOwnerId
+        if (previousOwner.isNotBlank() && previousOwner != session.userId) {
+            // Strict account isolation: never leak previous user's local records into a different account
+            repository.clearLocalTablesForAccountSwitch()
+        }
+        val hydratedSession = if (session.providers.isEmpty() && session.accessToken.isNotBlank()) {
+            when (val userRes = authClient.fetchUser(
+                accessToken = session.accessToken,
+                refreshToken = session.refreshToken,
+                expiresAtEpochSec = session.expiresAtEpochSec
+            )) {
+                is SupabaseAuthResult.Success -> userRes.data
+                is SupabaseAuthResult.Error -> session
+            }
+        } else {
+            session
+        }
+        repository.saveAuthSession(hydratedSession)
+        repository.updateActiveAccountOwnerId(hydratedSession.userId)
+        // Trigger immediate background sync
+        syncCloudNow()
     }
 
     // endregion
@@ -1639,3 +3242,4 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         super.onCleared()
     }
 }
+

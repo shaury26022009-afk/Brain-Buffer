@@ -139,6 +139,65 @@ object AppLauncherHelper {
         }
     }
 
+    fun openDocument(context: Context, uri: Uri, preferredPackage: String? = null): Boolean {
+        return runCatching {
+            val mime = context.contentResolver.getType(uri) ?: "*/*"
+            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mime)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (!preferredPackage.isNullOrBlank()) {
+                    setPackage(preferredPackage)
+                }
+            }
+            context.startActivity(viewIntent)
+            true
+        }.getOrElse {
+            runCatching {
+                val fallback = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "*/*")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(Intent.createChooser(fallback, "Open Study Document").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+                true
+            }.getOrDefault(false)
+        }
+    }
+
+    fun openDialer(context: Context): Boolean {
+        return runCatching {
+            val intent = Intent(Intent.ACTION_DIAL).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Validates and opens an approved study YouTube/lecture HTTPS URL safely.
+     * Rejects non-HTTPS schemes (javascript:, file:, content:, intent:) to prevent unsafe redirects.
+     */
+    fun isValidStudyUrl(rawUrl: String): Boolean {
+        val trimmed = rawUrl.trim()
+        if (!trimmed.startsWith("https://", ignoreCase = true)) return false
+        val uri = runCatching { Uri.parse(trimmed) }.getOrNull() ?: return false
+        val host = uri.host?.lowercase().orEmpty()
+        return host.isNotBlank() && host.contains('.')
+    }
+
+    fun openStudyUrl(context: Context, rawUrl: String): Boolean {
+        if (!isValidStudyUrl(rawUrl)) return false
+        return runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(rawUrl.trim())).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+    }
+
     fun isAppPinningActive(context: Context): Boolean {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
         return runCatching { am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE }.getOrDefault(false)
@@ -167,39 +226,31 @@ object AppLauncherHelper {
     private fun matchesHeuristic(packageName: String, label: String, option: ControlledAccessOption): Boolean {
         val combined = "${packageName.lowercase()} ${label.lowercase()}"
         return when (option) {
-            ControlledAccessOption.STUDY_PDF ->
-                combined.contains("pdf") || combined.contains("adobe") || combined.contains("xodo") ||
-                    combined.contains("drive") || combined.contains("docs") || combined.contains("wps") ||
-                    combined.contains("office") || combined.contains("files") || combined.contains("notes")
-
             ControlledAccessOption.STUDY_LECTURE ->
                 combined.contains("youtube") || combined.contains("coursera") || combined.contains("udemy") ||
                     combined.contains("khan") || combined.contains("edx") || combined.contains("unacademy") ||
                     combined.contains("classroom") || combined.contains("vimeo") || combined.contains("vlc")
 
-            ControlledAccessOption.READING_RESEARCH ->
-                combined.contains("chrome") || combined.contains("firefox") || combined.contains("brave") ||
-                    combined.contains("edge") || combined.contains("kindle") || combined.contains("notion") ||
-                    combined.contains("obsidian") || combined.contains("wikipedia") || combined.contains("anki")
+            ControlledAccessOption.SMS_AND_EMAILS ->
+                combined.contains("gm") || combined.contains("mail") || combined.contains("outlook") ||
+                    combined.contains("messaging") || combined.contains("mms") || combined.contains("sms") ||
+                    combined.contains("messages") || combined.contains("proton") || combined.contains("spark")
 
-            ControlledAccessOption.NOTES_WRITING ->
-                combined.contains("notion") || combined.contains("obsidian") || combined.contains("onenote") ||
-                    combined.contains("keep") || combined.contains("docs") || combined.contains("evernote") ||
-                    combined.contains("note") || combined.contains("word") || combined.contains("goodnotes")
+            ControlledAccessOption.FILES_AND_DOCUMENTS ->
+                combined.contains("files") || combined.contains("docs") || combined.contains("word") ||
+                    combined.contains("notion") || combined.contains("obsidian") || combined.contains("onenote") ||
+                    combined.contains("keep") || combined.contains("office") || combined.contains("wps")
 
-            ControlledAccessOption.GAMES ->
-                combined.contains("game") || combined.contains("chess") || combined.contains("minecraft") ||
-                    combined.contains("roblox") || combined.contains("supercell") || combined.contains("pubg") ||
-                    combined.contains("genshin") || combined.contains("riot")
+            ControlledAccessOption.CALLS ->
+                combined.contains("dialer") || combined.contains("phone") || combined.contains("contacts")
 
-            ControlledAccessOption.SOCIAL_ENTERTAINMENT ->
-                combined.contains("instagram") || combined.contains("tiktok") || combined.contains("musically") ||
-                    combined.contains("reddit") || combined.contains("netflix") || combined.contains("twitch") ||
-                    combined.contains("twitter") || combined.contains("x.android") || combined.contains("snapchat") ||
-                    combined.contains("whatsapp") || combined.contains("discord")
+            ControlledAccessOption.PDFS_AND_DRIVE ->
+                combined.contains("pdf") || combined.contains("adobe") || combined.contains("xodo") ||
+                    combined.contains("drive") || combined.contains("docs") || combined.contains("wps") ||
+                    combined.contains("dropbox") || combined.contains("onedrive")
 
-            ControlledAccessOption.TAKE_BREAK,
-            ControlledAccessOption.OTHER -> false
+            ControlledAccessOption.CUSTOM -> false
         }
     }
 }
+

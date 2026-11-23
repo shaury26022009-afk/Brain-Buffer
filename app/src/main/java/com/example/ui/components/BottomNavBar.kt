@@ -27,15 +27,13 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.LocalFlorist
-import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Timer
-import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.LocalFlorist
-import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -90,9 +89,12 @@ object AppRoutes {
     const val ONBOARDING = "onboarding"
     const val HOME = "home"
     const val FOCUS = "focus"
+    const val BLOCK = "block"
     const val PLANNER = "planner"
+    const val USAGE = "usage"
     const val GARDEN = "garden"
     const val PROFILE = "profile"
+    const val AUTH = "auth"
     const val INSIGHTS = "insights"
     const val MIND_RESET = "mind_reset"
     const val SETTINGS = "settings"
@@ -108,9 +110,8 @@ enum class BottomNavDestination(
 ) {
     HOME(AppRoutes.HOME, "Home", Icons.Rounded.Home, Icons.Outlined.Home, "nav_home"),
     FOCUS(AppRoutes.FOCUS, "Focus", Icons.Rounded.Timer, Icons.Outlined.Timer, "nav_focus"),
-    PLANNER(AppRoutes.PLANNER, "Planner", Icons.Rounded.CalendarMonth, Icons.Outlined.CalendarMonth, "nav_planner"),
-    GARDEN(AppRoutes.GARDEN, "Garden", Icons.Rounded.LocalFlorist, Icons.Outlined.LocalFlorist, "nav_garden"),
-    PROFILE(AppRoutes.PROFILE, "Profile", Icons.Rounded.Person, Icons.Outlined.Person, "nav_profile")
+    INSIGHTS(AppRoutes.INSIGHTS, "Insights", Icons.Rounded.BarChart, Icons.Outlined.BarChart, "nav_insights"),
+    SETTINGS(AppRoutes.PROFILE, "Settings", Icons.Rounded.Settings, Icons.Outlined.Settings, "nav_settings")
 }
 
 private data class MeasuredSlot(
@@ -181,6 +182,7 @@ fun BrainBufferBottomBar(
     val lensExpandAnim = remember { Animatable(0f) }
     val lensVelocityStretchAnim = remember { Animatable(0f) }
     val pressDipAnim = remember { Animatable(0f) }
+    val cachedCapsulePath = remember { Path() }
 
     // Measured item slot geometry relative to the padded Row
     val measuredSlots = remember {
@@ -425,7 +427,8 @@ fun BrainBufferBottomBar(
                         0f
                     },
                     enableSpecularSheen = renderQuality.enableSpecularSheen,
-                    enableAmbientShadow = renderQuality.enableAmbientShadows
+                    enableAmbientShadow = renderQuality.enableAmbientShadows,
+                    reusablePath = cachedCapsulePath
                 )
             }
 
@@ -698,13 +701,13 @@ internal fun LiquidGlassNavItem(
             modifier = Modifier.graphicsLayer {
                 val proximity = (1f - abs(lensPositionProvider() - slotIndex.toFloat())).coerceIn(0f, 1f)
                 val expand = lensExpandProvider()
-                val baseScale = 1.0f + 0.10f * proximity
+                val baseScale = 1.0f + 0.11f * proximity
                 val opticalMagnify = 0.16f * expand * proximity
                 val pressScale = if (isLightlyPressed && expand < 0.05f) -0.06f else 0f
                 val finalScale = (baseScale + opticalMagnify + pressScale).coerceIn(0.90f, 1.28f)
                 scaleX = finalScale
                 scaleY = finalScale
-                translationY = (-2.4f * expand * proximity).dp.toPx()
+                translationY = ((-1.1f * proximity) - (2.4f * expand * proximity)).dp.toPx()
             },
             contentAlignment = Alignment.Center
         ) {

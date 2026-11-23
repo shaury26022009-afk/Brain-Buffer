@@ -70,10 +70,12 @@ class BrainBufferNavigationState(
         }
     }
 
+    fun navigateToBlock() {
+        navigateToTopLevel(BottomNavDestination.FOCUS)
+    }
+
     fun navigateToInsights() {
-        navController.navigate(AppRoutes.INSIGHTS) {
-            launchSingleTop = true
-        }
+        navigateToTopLevel(BottomNavDestination.INSIGHTS)
     }
 
     fun navigateToMindReset() {
@@ -82,14 +84,22 @@ class BrainBufferNavigationState(
         }
     }
 
+    fun navigateToProfile() {
+        navigateToTopLevel(BottomNavDestination.SETTINGS)
+    }
+
     fun navigateToSettings() {
-        navController.navigate(AppRoutes.SETTINGS) {
-            launchSingleTop = true
-        }
+        navigateToTopLevel(BottomNavDestination.SETTINGS)
     }
 
     fun navigateToStrictFocus() {
         navController.navigate(AppRoutes.STRICT_FOCUS) {
+            launchSingleTop = true
+        }
+    }
+
+    fun navigateToAuth() {
+        navController.navigate(AppRoutes.AUTH) {
             launchSingleTop = true
         }
     }

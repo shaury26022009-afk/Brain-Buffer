@@ -25,9 +25,9 @@ import com.example.ui.components.BottomNavDestination
 import com.example.ui.components.BrainBufferBottomBar
 import com.example.ui.components.BrainBufferLiquidGlassRail
 import com.example.ui.screens.FocusScreen
-import com.example.ui.screens.GardenScreen
 import com.example.ui.screens.HomeScreen
-import com.example.ui.screens.PlannerScreen
+import com.example.ui.screens.InsightsPrimaryScreen
+import com.example.ui.screens.ProfileScreen
 import com.example.ui.theme.BrainBufferTheme
 import com.example.ui.theme.LocalAdaptiveMetrics
 import com.example.ui.theme.ProvideAdaptiveMetrics
@@ -53,7 +53,6 @@ class AdaptiveResponsiveTest {
 
     @Test
     fun `window size class breakpoints cover phones, tablets, landscape, and split-screen`() {
-        // 1. Small phone portrait (360 x 640 dp)
         val smallPhone = computeAdaptiveMetrics(360.dp, 640.dp)
         assertEquals(WindowWidthClass.COMPACT, smallPhone.widthClass)
         assertEquals(WindowHeightClass.MEDIUM, smallPhone.heightClass)
@@ -61,14 +60,12 @@ class AdaptiveResponsiveTest {
         assertFalse(smallPhone.useTwoColumnLayout)
         assertFalse(smallPhone.useCompactLandscapeSplit)
 
-        // 2. Large phone portrait (412 x 915 dp)
         val largePhone = computeAdaptiveMetrics(412.dp, 915.dp)
         assertEquals(WindowWidthClass.COMPACT, largePhone.widthClass)
         assertEquals(WindowHeightClass.EXPANDED, largePhone.heightClass)
         assertFalse(largePhone.useNavigationRail)
         assertFalse(largePhone.useTwoColumnLayout)
 
-        // 3. Phone landscape (800 x 360 dp)
         val phoneLandscape = computeAdaptiveMetrics(800.dp, 360.dp)
         assertEquals(WindowWidthClass.MEDIUM, phoneLandscape.widthClass)
         assertEquals(WindowHeightClass.COMPACT, phoneLandscape.heightClass)
@@ -77,21 +74,18 @@ class AdaptiveResponsiveTest {
         assertFalse(phoneLandscape.useTwoColumnLayout)
         assertTrue(phoneLandscape.useCompactLandscapeSplit)
 
-        // 4. Tablet portrait (768 x 1024 dp)
         val tabletPortrait = computeAdaptiveMetrics(768.dp, 1024.dp)
         assertEquals(WindowWidthClass.MEDIUM, tabletPortrait.widthClass)
         assertEquals(WindowHeightClass.EXPANDED, tabletPortrait.heightClass)
         assertTrue(tabletPortrait.useNavigationRail)
         assertTrue(tabletPortrait.useTwoColumnLayout)
 
-        // 5. Tablet landscape (1280 x 800 dp)
         val tabletLandscape = computeAdaptiveMetrics(1280.dp, 800.dp)
         assertEquals(WindowWidthClass.EXPANDED, tabletLandscape.widthClass)
         assertEquals(WindowHeightClass.MEDIUM, tabletLandscape.heightClass)
         assertTrue(tabletLandscape.useNavigationRail)
         assertTrue(tabletLandscape.useTwoColumnLayout)
 
-        // 6. Split-screen resize (500 x 700 dp -> compact; 900 x 700 dp -> expanded)
         val narrowSplit = computeAdaptiveMetrics(500.dp, 700.dp)
         val wideSplit = computeAdaptiveMetrics(900.dp, 700.dp)
         assertFalse(narrowSplit.useNavigationRail)
@@ -101,7 +95,7 @@ class AdaptiveResponsiveTest {
     }
 
     @Test
-    fun `liquid glass navigation rail renders all five destinations and switches on tap`() {
+    fun `liquid glass navigation rail renders all four destinations and switches on tap`() {
         var current by mutableStateOf(BottomNavDestination.HOME)
 
         composeRule.setContent {
@@ -124,9 +118,8 @@ class AdaptiveResponsiveTest {
 
         listOf(
             BottomNavDestination.FOCUS,
-            BottomNavDestination.PLANNER,
-            BottomNavDestination.GARDEN,
-            BottomNavDestination.PROFILE,
+            BottomNavDestination.INSIGHTS,
+            BottomNavDestination.SETTINGS,
             BottomNavDestination.HOME
         ).forEach { target ->
             composeRule.onNodeWithTag(target.testTag).performClick()
@@ -155,7 +148,7 @@ class AdaptiveResponsiveTest {
             }
         }
 
-        composeRule.onNodeWithTag(BottomNavDestination.GARDEN.testTag).performTouchInput {
+        composeRule.onNodeWithTag(BottomNavDestination.INSIGHTS.testTag).performTouchInput {
             longClick()
         }
         composeRule.waitForIdle()
@@ -184,40 +177,40 @@ class AdaptiveResponsiveTest {
             }
         }
 
-        // Long press Home (top) and slide down to Garden (4th slot of 5 -> ~70% height)
+        // Long press Home (top) and slide down to Insights (3rd slot of 4 -> ~62% height)
         composeRule.onNodeWithTag("brain_buffer_nav_rail").performTouchInput {
-            down(Offset(width * 0.50f, height * 0.10f))
+            down(Offset(width * 0.50f, height * 0.12f))
             advanceEventTime(320L)
-            moveTo(Offset(width * 0.50f, height * 0.35f))
+            moveTo(Offset(width * 0.50f, height * 0.37f))
             advanceEventTime(60L)
-            moveTo(Offset(width * 0.50f, height * 0.70f))
+            moveTo(Offset(width * 0.50f, height * 0.62f))
             advanceEventTime(60L)
             up()
         }
         composeRule.waitForIdle()
 
-        assertEquals(BottomNavDestination.GARDEN, current)
+        assertEquals(BottomNavDestination.INSIGHTS, current)
         assertEquals(1, selectionCount)
 
         // Drag far horizontally outside rail — must cancel without changing destination
         composeRule.onNodeWithTag("brain_buffer_nav_rail").performTouchInput {
-            down(Offset(width * 0.50f, height * 0.70f))
+            down(Offset(width * 0.50f, height * 0.62f))
             advanceEventTime(320L)
-            moveTo(Offset(width * 0.50f, height * 0.10f))
+            moveTo(Offset(width * 0.50f, height * 0.12f))
             advanceEventTime(60L)
-            moveTo(Offset(width * 0.50f + 500f, height * 0.10f))
+            moveTo(Offset(width * 0.50f + 500f, height * 0.12f))
             advanceEventTime(60L)
             up()
         }
         composeRule.waitForIdle()
 
-        assertEquals(BottomNavDestination.GARDEN, current)
+        assertEquals(BottomNavDestination.INSIGHTS, current)
         assertEquals(1, selectionCount)
     }
 
     @Test
     @Config(sdk = [36], qualifiers = "w1280dp-h800dp")
-    fun `dynamic resize swaps cleanly between bottom bar and navigation rail while preserving destination and rendering tablet panes`() {
+    fun `dynamic resize swaps cleanly between bottom bar and navigation rail while preserving destination`() {
         var windowWidth by mutableStateOf(390.dp)
         var windowHeight by mutableStateOf(800.dp)
         var currentDest by mutableStateOf(BottomNavDestination.HOME)
@@ -238,73 +231,16 @@ class AdaptiveResponsiveTest {
                                     )
                                     Box(modifier = Modifier.weight(1f).fillMaxSize()) {
                                         when (currentDest) {
-                                            BottomNavDestination.HOME -> HomeScreen(
-                                                uiState = uiState,
-                                                greeting = "Good morning",
-                                                formattedDate = "Thu, Nov 19",
-                                                onRefreshMotivation = {},
-                                                onStartFocus = {},
-                                                onOpenFocus = {},
-                                                onToggleTask = {},
-                                                onQuickAddTask = { _, _ -> },
-                                                onOpenPlanner = {},
-                                                onOpenGarden = {},
-                                                onOpenInsights = {},
-                                                onOpenMindReset = {},
-                                                onOpenProfile = {}
-                                            )
-                                            BottomNavDestination.FOCUS -> FocusScreen(
-                                                uiState = uiState,
-                                                onSelectMode = {},
-                                                onSetDuration = {},
-                                                onSelectSubject = {},
-                                                onAddSubject = {},
-                                                onUpdateSessionGoal = {},
-                                                onToggleZenMode = {},
-                                                onStartOrResume = {},
-                                                onPause = {},
-                                                onReset = {},
-                                                onCompleteNow = {},
-                                                onDismissCelebration = {},
-                                                onOpenGarden = {},
-                                                onOpenMindReset = {},
-                                                onAddDistractionNote = {}
-                                            )
-                                            BottomNavDestination.PLANNER -> PlannerScreen(
-                                                uiState = uiState,
-                                                onToggleTask = {},
-                                                onSaveTask = { _, _, _, _, _, _, _, _ -> },
-                                                onDeleteTask = {},
-                                                onUndoDelete = {}
-                                            )
-                                            BottomNavDestination.GARDEN -> GardenScreen(
-                                                uiState = uiState,
-                                                onSelectActivePlant = {},
-                                                onNurtureWithSeed = { false },
-                                                onPlantNewSeed = { _, _ -> false },
-                                                onStartFocus = {}
-                                            )
-                                            BottomNavDestination.PROFILE -> Unit
+                                            BottomNavDestination.HOME -> HomeScreen(uiState = uiState)
+                                            BottomNavDestination.FOCUS -> FocusScreen(uiState = uiState)
+                                            BottomNavDestination.INSIGHTS -> InsightsPrimaryScreen(uiState = uiState)
+                                            BottomNavDestination.SETTINGS -> ProfileScreen(uiState = uiState)
                                         }
                                     }
                                 }
                             } else {
                                 Box(modifier = Modifier.fillMaxSize()) {
-                                    HomeScreen(
-                                        uiState = uiState,
-                                        greeting = "Good morning",
-                                        formattedDate = "Thu, Nov 19",
-                                        onRefreshMotivation = {},
-                                        onStartFocus = {},
-                                        onOpenFocus = {},
-                                        onToggleTask = {},
-                                        onQuickAddTask = { _, _ -> },
-                                        onOpenPlanner = {},
-                                        onOpenGarden = {},
-                                        onOpenInsights = {},
-                                        onOpenMindReset = {},
-                                        onOpenProfile = {}
-                                    )
+                                    HomeScreen(uiState = uiState)
                                     BrainBufferBottomBar(
                                         currentDestination = currentDest,
                                         onSelectDestination = { currentDest = it },
@@ -319,38 +255,33 @@ class AdaptiveResponsiveTest {
             }
         }
 
-        // Phone portrait: strictly ONE bottom bar, ZERO navigation rails, no tablet 2-col layout
+        // Phone portrait: strictly ONE bottom bar, ZERO navigation rails
         composeRule.onAllNodesWithTag("brain_buffer_bottom_bar").assertCountEquals(1)
         composeRule.onAllNodesWithTag("brain_buffer_nav_rail").assertCountEquals(0)
-        composeRule.onAllNodesWithTag("home_tablet_two_column").assertCountEquals(0)
 
         // Resize dynamically to tablet landscape (1100 x 760 dp)
         windowWidth = 1100.dp
         windowHeight = 760.dp
         composeRule.waitForIdle()
 
-        // Tablet landscape: strictly ONE navigation rail, ZERO bottom bars, 2-col Home renders
         composeRule.onAllNodesWithTag("brain_buffer_nav_rail").assertCountEquals(1)
         composeRule.onAllNodesWithTag("brain_buffer_bottom_bar").assertCountEquals(0)
-        composeRule.onNodeWithTag("home_tablet_two_column").assertIsDisplayed()
 
-        // Switch to Focus on tablet -> split workspace + distraction parking lot renders
+        // Switch across all 4 destinations on tablet
         composeRule.onNodeWithTag(BottomNavDestination.FOCUS.testTag).performClick()
         composeRule.waitForIdle()
         assertEquals(BottomNavDestination.FOCUS, currentDest)
-        composeRule.onNodeWithTag("focus_split_layout").assertIsDisplayed()
-        composeRule.onNodeWithTag("focus_distraction_parking_lot").assertIsDisplayed()
+        composeRule.onNodeWithTag("focus_setup_headline").assertIsDisplayed()
 
-        // Switch to Planner on tablet -> 2-pane split + 14-day calendar grid renders
-        composeRule.onNodeWithTag(BottomNavDestination.PLANNER.testTag).performClick()
+        composeRule.onNodeWithTag(BottomNavDestination.INSIGHTS.testTag).performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("planner_tablet_split").assertIsDisplayed()
-        composeRule.onNodeWithTag("planner_tablet_calendar_grid").assertIsDisplayed()
+        assertEquals(BottomNavDestination.INSIGHTS, currentDest)
+        composeRule.onNodeWithTag("insights_screen").assertIsDisplayed()
 
-        // Switch to Garden on tablet -> 2-pane split renders
-        composeRule.onNodeWithTag(BottomNavDestination.GARDEN.testTag).performClick()
+        composeRule.onNodeWithTag(BottomNavDestination.SETTINGS.testTag).performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("garden_tablet_split").assertIsDisplayed()
+        assertEquals(BottomNavDestination.SETTINGS, currentDest)
+        composeRule.onNodeWithTag("profile_list").assertIsDisplayed()
 
         // Resize back to narrow split-screen (480 x 760 dp) -> returns to bottom bar seamlessly
         windowWidth = 480.dp
@@ -358,6 +289,6 @@ class AdaptiveResponsiveTest {
         composeRule.waitForIdle()
         composeRule.onAllNodesWithTag("brain_buffer_bottom_bar").assertCountEquals(1)
         composeRule.onAllNodesWithTag("brain_buffer_nav_rail").assertCountEquals(0)
-        assertEquals(BottomNavDestination.GARDEN, currentDest)
+        assertEquals(BottomNavDestination.SETTINGS, currentDest)
     }
 }

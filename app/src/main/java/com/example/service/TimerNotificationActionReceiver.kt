@@ -5,11 +5,15 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import com.example.data.BrainBufferRepository
-import com.example.data.local.BrainBufferDatabase
-import com.example.data.local.UserPreferencesStore
 import com.example.domain.FocusTimerEngine
+import com.example.domain.TemporaryAccessPolicy
 import com.example.model.ActivityCategory
 import com.example.model.ActivityLogRecord
+import com.example.model.FocusMode
+import com.example.model.FocusSessionRecord
+import com.example.model.InterventionEventRecord
+import com.example.model.InterventionEventType
+import com.example.model.PurposeSessionRecord
 import com.example.model.StudyActivityType
 import com.example.notifications.BrainBufferNotificationManager
 import com.example.system.AndroidDndBackend
@@ -19,6 +23,7 @@ import com.example.system.DndFocusController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
@@ -63,6 +68,8 @@ class TimerNotificationActionReceiver : BroadcastReceiver() {
         const val ACTION_TAKE_BREAK = "com.example.brainbuffer.action.TIMER_TAKE_BREAK"
         const val ACTION_ALLOW_5_MIN = "com.example.brainbuffer.action.DISTRACTION_ALLOW_5_MIN"
         const val ACTION_CONTINUE_ANYWAY = "com.example.brainbuffer.action.DISTRACTION_CONTINUE_ANYWAY"
+        const val ACTION_RETURN_TO_FOCUS_TEMP = "com.example.brainbuffer.action.TEMP_RETURN_TO_FOCUS"
+        const val ACTION_EXTEND_TEMP_5M = "com.example.brainbuffer.action.TEMP_EXTEND_5M"
 
         const val EXTRA_EXTEND_MINUTES = "extra_extend_minutes"
         const val EXTRA_DISTRACTION_PACKAGE = "extra_distraction_package"
@@ -79,24 +86,38 @@ class TimerNotificationActionReceiver : BroadcastReceiver() {
             distractionAppLabel: String = "",
             sessionId: String = ""
         ) {
-            val db = BrainBufferDatabase.getInstance(appContext)
-            val prefsStore = UserPreferencesStore(appContext)
-            val repository = BrainBufferRepository(db, prefsStore)
+            val repository = BrainBufferRepository.getInstance(appContext)
             val snapshot = repository.getTimerSnapshotOnce()
             val prefs = repository.getPreferencesOnce()
             val subjects = repository.getSubjectsOnce()
+
+            fun syncActiveNotificationAndService(updated: com.example.model.PersistedTimerSnapshot) {
+                val subjectName = subjects.firstOrNull { it.id == updated.selectedSubjectId }?.name
+                    ?: "General Study"
+                BrainBufferNotificationManager.postOrUpdateActiveTimerNotification(
+                    context = appContext,
+                    snapshot = updated,
+                    subjectName = subjectName,
+                    prefs = prefs.notificationPrefs,
+                    masterNotificationsEnabled = prefs.notificationsEnabled,
+                    nowEpochMs = nowEpochMs,
+                    nowElapsedRealtimeMs = nowElapsedMs,
+                    liveUpdatesEnabled = prefs.focusGuardSettings.liveUpdatesEnabled
+                )
+                FocusTimerService.syncWithSnapshot(appContext, updated)
+            }
 
             when (action) {
                 ACTION_PAUSE -> {
                     val paused = FocusTimerEngine.pause(snapshot, nowEpochMs, nowElapsedMs)
                     repository.saveTimerSnapshot(paused)
-                    FocusTimerService.syncWithSnapshot(appContext, paused)
+                    syncActiveNotificationAndService(paused)
                 }
 
                 ACTION_RESUME -> {
                     val resumed = FocusTimerEngine.startOrResume(snapshot, nowEpochMs, nowElapsedMs)
                     repository.saveTimerSnapshot(resumed)
-                    FocusTimerService.syncWithSnapshot(appContext, resumed)
+                    syncActiveNotificationAndService(resumed)
                 }
 
                 ACTION_EXTEND -> {
@@ -108,7 +129,7 @@ class TimerNotificationActionReceiver : BroadcastReceiver() {
                         nowElapsedRealtimeMs = nowElapsedMs
                     )
                     repository.saveTimerSnapshot(extended)
-                    FocusTimerService.syncWithSnapshot(appContext, extended)
+                    syncActiveNotificationAndService(extended)
                 }
 
                 ACTION_TAKE_BREAK -> {
@@ -122,36 +143,108 @@ class TimerNotificationActionReceiver : BroadcastReceiver() {
                         nowElapsedRealtimeMs = nowElapsedMs
                     )
                     repository.saveTimerSnapshot(onBreak)
-                    FocusTimerService.syncWithSnapshot(appContext, onBreak)
+                    syncActiveNotificationAndService(onBreak)
                 }
 
                 ACTION_ALLOW_5_MIN -> {
                     BrainBufferNotificationManager.cancelDistractionWarningNotification(appContext)
-                    val mappings = repository.getAppCategoryMappingsOnce()
-                    val suggestion = if (distractionPackage.isNotBlank()) {
-                        AppUsageAwarenessHelper.matchPackageToSuggestion(distractionPackage, mappings)
-                    } else null
-                    val activityType = suggestion?.suggestedActivity ?: StudyActivityType.ENTERTAINMENT
-                    val category = activityType.category
                     val label = distractionAppLabel.ifBlank {
-                        suggestion?.appDisplayName ?: activityType.label
+                        distractionPackage.substringAfterLast('.').ifBlank { "App" }
                     }
-                    val allowanceMinutes = extendMinutes.coerceIn(1, 30)
-                    val switched = FocusTimerEngine.switchActivity(
-                        current = snapshot,
-                        activityType = activityType,
-                        activityLabel = "${activityType.shortLabel} · $label",
-                        category = category,
-                        durationMinutes = allowanceMinutes,
-                        subjectId = snapshot.selectedSubjectId,
-                        wasPlanned = false,
+                    val existingTemp = repository.getActiveTempAccessOnce()
+                    val clampedMinutes = extendMinutes.coerceIn(1, TemporaryAccessPolicy.MAX_EXTENSION_MINUTES)
+                    val startRes = TemporaryAccessPolicy.startTemporaryAccess(
+                        parentSessionId = snapshot.sessionId,
+                        packageName = distractionPackage,
+                        appLabel = label,
+                        purposeLabel = "Temporary allowance",
+                        durationMinutes = clampedMinutes,
                         nowEpochMs = nowEpochMs,
-                        nowElapsedRealtimeMs = nowElapsedMs,
-                        approvedPackageName = distractionPackage,
-                        approvedAppLabel = label
+                        existingActive = existingTemp,
+                        ownPackageName = appContext.packageName
                     )
-                    repository.saveTimerSnapshot(switched)
-                    FocusTimerService.syncWithSnapshot(appContext, switched)
+                    if (startRes is TemporaryAccessPolicy.StartResult.Started) {
+                        val pausedSnapshot = FocusTimerEngine.pauseForTemporaryAccess(snapshot, nowEpochMs, nowElapsedMs)
+                        repository.saveTimerSnapshot(pausedSnapshot)
+                        repository.saveActiveTempAccess(startRes.session)
+                        repository.logInterventionEvent(
+                            InterventionEventRecord(
+                                sessionKey = snapshot.sessionId,
+                                eventType = InterventionEventType.APP_SWITCH,
+                                packageName = startRes.session.packageName,
+                                appLabel = startRes.session.appLabel,
+                                declaredPurpose = snapshot.purposeCategory.label,
+                                actionTaken = "Temporarily allowed for ${clampedMinutes}m from notification",
+                                plannedSeconds = clampedMinutes * 60,
+                                timestampMs = nowEpochMs,
+                                dateEpochDay = LocalDate.now().toEpochDay()
+                            )
+                        )
+                        syncActiveNotificationAndService(pausedSnapshot)
+                    }
+                }
+
+                ACTION_RETURN_TO_FOCUS_TEMP -> {
+                    BrainBufferNotificationManager.cancelTemporaryAccessExpiredNotification(appContext)
+                    BrainBufferNotificationManager.cancelDistractionWarningNotification(appContext)
+                    val currentTemp = repository.getActiveTempAccessOnce()
+                    if (currentTemp != null) {
+                        val closed = TemporaryAccessPolicy.closeTemporaryAccess(currentTemp, nowEpochMs)
+                        val elapsedTempSec = closed.actualDurationSeconds(nowEpochMs)
+                        repository.saveActiveTempAccess(null)
+                        repository.logInterventionEvent(
+                            InterventionEventRecord(
+                                sessionKey = snapshot.sessionId,
+                                eventType = InterventionEventType.TEMP_ACCESS_EXPIRED,
+                                packageName = closed.packageName,
+                                appLabel = closed.appLabel,
+                                declaredPurpose = snapshot.purposeCategory.label,
+                                actionTaken = "Returned to focus",
+                                plannedSeconds = closed.originalAllowanceMinutes * 60,
+                                extensionSeconds = closed.extensionMinutesUsed * 60,
+                                actualSeconds = elapsedTempSec,
+                                timestampMs = nowEpochMs,
+                                dateEpochDay = LocalDate.now().toEpochDay()
+                            )
+                        )
+                        val resumed = FocusTimerEngine.resumeFromTemporaryAccess(
+                            current = snapshot,
+                            tempAccessActualSeconds = elapsedTempSec,
+                            nowEpochMs = nowEpochMs,
+                            nowElapsedRealtimeMs = nowElapsedMs
+                        )
+                        repository.saveTimerSnapshot(resumed)
+                        syncActiveNotificationAndService(resumed)
+                    }
+                }
+
+                ACTION_EXTEND_TEMP_5M -> {
+                    BrainBufferNotificationManager.cancelTemporaryAccessExpiredNotification(appContext)
+                    val currentTemp = repository.getActiveTempAccessOnce()
+                    if (currentTemp != null) {
+                        val res = TemporaryAccessPolicy.requestExtension(
+                            current = currentTemp,
+                            requestedMinutes = extendMinutes.coerceAtMost(TemporaryAccessPolicy.MAX_EXTENSION_MINUTES),
+                            nowEpochMs = nowEpochMs
+                        )
+                        if (res is TemporaryAccessPolicy.ExtensionResult.Granted) {
+                            repository.saveActiveTempAccess(res.updated)
+                            repository.logInterventionEvent(
+                                InterventionEventRecord(
+                                    sessionKey = snapshot.sessionId,
+                                    eventType = InterventionEventType.TEMP_ACCESS_EXTENDED,
+                                    packageName = res.updated.packageName,
+                                    appLabel = res.updated.appLabel,
+                                    declaredPurpose = snapshot.purposeCategory.label,
+                                    actionTaken = "Extended +${res.grantedMinutes}m (one-time max 5m)",
+                                    plannedSeconds = res.updated.originalAllowanceMinutes * 60,
+                                    extensionSeconds = res.grantedMinutes * 60,
+                                    timestampMs = nowEpochMs,
+                                    dateEpochDay = LocalDate.now().toEpochDay()
+                                )
+                            )
+                        }
+                    }
                 }
 
                 ACTION_CONTINUE_ANYWAY -> {
@@ -193,19 +286,116 @@ class TimerNotificationActionReceiver : BroadcastReceiver() {
                             nowElapsedRealtimeMs = nowElapsedMs
                         ) ?: FocusTimerEngine.reset(snapshot)
                         repository.saveTimerSnapshot(restored)
-                        FocusTimerService.syncWithSnapshot(appContext, restored)
+                        syncActiveNotificationAndService(restored)
                     } else if (snapshot.hasStarted && snapshot.runningSinceEpochMs == null) {
                         val resumed = FocusTimerEngine.startOrResume(snapshot, nowEpochMs, nowElapsedMs)
                         repository.saveTimerSnapshot(resumed)
-                        FocusTimerService.syncWithSnapshot(appContext, resumed)
+                        syncActiveNotificationAndService(resumed)
                     }
                 }
 
                 ACTION_END -> {
                     BrainBufferNotificationManager.cancelCompletionNotification(appContext)
                     BrainBufferNotificationManager.cancelDistractionWarningNotification(appContext)
+                    BrainBufferNotificationManager.cancelTemporaryAccessExpiredNotification(appContext)
+
+                    val activeTemp = repository.getActiveTempAccessOnce()
+                    val effectiveSnap = FocusTimerEngine.resolveParentForEarlyExit(
+                        snapshot = snapshot,
+                        activeTempAccess = activeTemp,
+                        nowEpochMs = nowEpochMs,
+                        nowElapsedRealtimeMs = nowElapsedMs
+                    )
+                    val decision = FocusTimerEngine.evaluateEarlyTermination(
+                        snapshot = effectiveSnap,
+                        nowEpochMs = nowEpochMs,
+                        nowElapsedRealtimeMs = nowElapsedMs
+                    )
+                    val alreadySaved = decision.shouldPersist && repository.hasPurposeSession(decision.sessionId)
+                    if (decision.shouldPersist && !alreadySaved) {
+                        val subject = subjects.firstOrNull { it.id == effectiveSnap.selectedSubjectId }
+                        val subjectName = subject?.name ?: "General Focus"
+                        val todayEpoch = LocalDate.now().toEpochDay()
+
+                        repository.upsertStudySession(
+                            sessionKey = decision.sessionId,
+                            subjectId = subject?.id,
+                            subjectName = subjectName,
+                            startTimeMs = effectiveSnap.activityStartedAtEpochMs ?: (nowEpochMs - decision.actualSeconds * 1000L),
+                            endTimeMs = nowEpochMs,
+                            totalDurationSeconds = decision.actualSeconds,
+                            plannedDurationSeconds = decision.plannedSeconds,
+                            sessionStatus = decision.status, // "ENDED_EARLY"
+                            focusGuardLevel = effectiveSnap.focusGuardLevel.name,
+                            activityType = effectiveSnap.activeActivityType.name
+                        )
+                        repository.recordActivityLog(
+                            ActivityLogRecord(
+                                sessionKey = decision.sessionId,
+                                activityType = effectiveSnap.activeActivityType,
+                                activityLabel = "${effectiveSnap.activeActivityLabel} (Ended early)",
+                                category = effectiveSnap.activeActivityCategory,
+                                subjectId = subject?.id,
+                                subjectName = subjectName,
+                                subjectColorHex = subject?.colorHex ?: effectiveSnap.activeActivityType.accentHex,
+                                plannedSeconds = decision.plannedSeconds,
+                                actualSeconds = decision.actualSeconds,
+                                startedAtMs = effectiveSnap.activityStartedAtEpochMs ?: (nowEpochMs - decision.actualSeconds * 1000L),
+                                endedAtMs = nowEpochMs,
+                                dateEpochDay = todayEpoch,
+                                wasPlanned = false,
+                                notes = effectiveSnap.sessionGoal.trim()
+                            )
+                        )
+                        if (effectiveSnap.mode == FocusMode.FOCUS && !effectiveSnap.isOnBreak) {
+                            repository.savePurposeSession(
+                                PurposeSessionRecord(
+                                    sessionKey = decision.sessionId,
+                                    purposeCategory = effectiveSnap.purposeCategory,
+                                    sessionName = effectiveSnap.sessionGoal.ifBlank { subjectName },
+                                    allowedPackages = effectiveSnap.allowedPackages.toList(),
+                                    allowedAppLabels = effectiveSnap.allowedAppLabels,
+                                    plannedSeconds = decision.plannedSeconds,
+                                    actualFocusedSeconds = decision.actualSeconds,
+                                    breakSeconds = effectiveSnap.accumulatedBreakSeconds,
+                                    temporaryAccessSeconds = effectiveSnap.accumulatedTempAccessSeconds,
+                                    distractionSeconds = effectiveSnap.accumulatedDistractionSeconds,
+                                    interventionCount = effectiveSnap.interventionCount,
+                                    status = PurposeSessionRecord.STATUS_ENDED_EARLY,
+                                    breakPlanMode = effectiveSnap.breakPlanMode,
+                                    linkedTaskId = effectiveSnap.linkedTaskId,
+                                    startedAtMs = effectiveSnap.sessionStartedAtEpochMs ?: (nowEpochMs - decision.actualSeconds * 1000L),
+                                    endedAtMs = nowEpochMs,
+                                    dateEpochDay = todayEpoch
+                                )
+                            )
+                        }
+                        if (effectiveSnap.mode == FocusMode.FOCUS && !effectiveSnap.isOnBreak && decision.actualSeconds >= 60) {
+                            val existingSessions = repository.focusSessions.first()
+                            repository.recordFocusSessionAndGrowGarden(
+                                session = FocusSessionRecord(
+                                    subjectId = subject?.id,
+                                    subjectName = effectiveSnap.sessionGoal.ifBlank { subjectName },
+                                    subjectColorHex = subject?.colorHex ?: effectiveSnap.purposeCategory.accentHex,
+                                    durationSeconds = decision.actualSeconds,
+                                    plannedSeconds = decision.plannedSeconds,
+                                    sessionGoal = effectiveSnap.sessionGoal.trim(),
+                                    mode = FocusMode.FOCUS,
+                                    completedAtMs = nowEpochMs,
+                                    dateEpochDay = todayEpoch
+                                ),
+                                dailyTargetMinutes = prefs.dailyTargetMinutes,
+                                allExistingSessions = existingSessions,
+                                existingDecorations = prefs.unlockedDecorations,
+                                sessionKey = decision.sessionId
+                            )
+                        }
+                    }
+
                     DistractionAlertCoordinator.clearSession(snapshot.sessionId)
-                    val reset = FocusTimerEngine.reset(snapshot)
+                    DistractionAlertCoordinator.clearSession(effectiveSnap.sessionId)
+                    repository.saveActiveTempAccess(null)
+                    val reset = FocusTimerEngine.markCompletedAndReset(effectiveSnap, decision.sessionId)
                     repository.saveTimerSnapshot(reset)
                     if (prefs.savedDndInterruptionFilter != DndFocusController.NO_SAVED_FILTER) {
                         DndFocusController.restorePreviousDnd(

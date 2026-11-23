@@ -1,6 +1,7 @@
 package com.example.data.local
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "subjects")
@@ -117,3 +118,104 @@ data class AppCategoryMappingEntity(
     val isAllowedDuringFocus: Boolean,
     val updatedAtMs: Long = System.currentTimeMillis()
 )
+
+@Entity(
+    tableName = "study_sessions",
+    indices = [Index(value = ["sessionKey"], unique = true)]
+)
+data class StudySessionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val sessionKey: String,
+    val subjectId: Long?,
+    val subjectName: String,
+    val startTimeMs: Long,
+    val endTimeMs: Long?,
+    val totalDurationSeconds: Int,
+    val plannedDurationSeconds: Int,
+    val sessionStatus: String,
+    val focusGuardLevel: String,
+    val activityType: String,
+    val updatedAtMs: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "blocked_apps")
+data class BlockedAppEntity(
+    @PrimaryKey val packageName: String,
+    val appLabel: String,
+    val category: String,
+    val blockInNormal: Boolean,
+    val blockInHigh: Boolean,
+    val blockInCustom: Boolean,
+    val isBlocked: Boolean,
+    val updatedAtMs: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "study_resources")
+data class StudyResourceEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val subjectId: Long?,
+    val title: String,
+    val url: String,
+    val resourceType: String,
+    val channelName: String,
+    val lastOpenedAtMs: Long = 0L,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
+@Entity(
+    tableName = "sync_outbox",
+    indices = [Index(value = ["entityType", "localKey"], unique = true)]
+)
+data class SyncOutboxEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val entityType: String,
+    val localKey: String,
+    val operation: String,
+    val payloadJson: String,
+    val createdAtMs: Long = System.currentTimeMillis(),
+    val retryCount: Int = 0,
+    val lastError: String = ""
+)
+
+@Entity(
+    tableName = "purpose_sessions",
+    indices = [Index(value = ["sessionKey"], unique = true)]
+)
+data class PurposeSessionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val sessionKey: String,
+    val purposeCategory: String,
+    val sessionName: String,
+    val allowedPackagesCsv: String,
+    val allowedAppLabelsCsv: String,
+    val plannedSeconds: Int,
+    val actualFocusedSeconds: Int,
+    val breakSeconds: Int,
+    val temporaryAccessSeconds: Int,
+    val distractionSeconds: Int,
+    val interventionCount: Int,
+    val status: String,
+    val breakPlanMode: String,
+    val linkedTaskId: Long?,
+    val startedAtMs: Long,
+    val endedAtMs: Long,
+    val dateEpochDay: Long
+)
+
+@Entity(tableName = "intervention_events")
+data class InterventionEventEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val sessionKey: String,
+    val eventType: String,
+    val packageName: String,
+    val appLabel: String,
+    val declaredPurpose: String,
+    val actionTaken: String,
+    val plannedSeconds: Int,
+    val extensionSeconds: Int,
+    val actualSeconds: Int,
+    val timestampMs: Long,
+    val dateEpochDay: Long
+)
+
+

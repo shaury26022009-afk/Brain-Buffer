@@ -10,19 +10,24 @@ import android.os.SystemClock
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.data.BrainBufferRepository
-import com.example.data.local.BrainBufferDatabase
-import com.example.data.local.UserPreferencesStore
 import com.example.domain.FocusTimerEngine
+import com.example.domain.PurposeMatchingEngine
 import com.example.model.ActivityLogRecord
 import com.example.model.FocusGuardLevel
 import com.example.model.FocusMode
 import com.example.model.FocusSessionRecord
+import com.example.model.InterventionEventRecord
+import com.example.model.InterventionEventType
 import com.example.model.PersistedTimerSnapshot
+import com.example.model.PurposeSessionRecord
 import com.example.notifications.BrainBufferNotificationManager
 import com.example.system.AndroidDndBackend
 import com.example.system.AppUsageAwarenessHelper
+import com.example.system.BrainBufferHaptics
 import com.example.system.DistractionAlertCoordinator
 import com.example.system.DndFocusController
+import com.example.system.HapticEvent
+import com.example.ui.FocusBlockedActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,22 +66,56 @@ class FocusTimerService : Service() {
             return START_NOT_STICKY
         }
 
+        // Guarantee startForeground() is called synchronously before any async IO
+        // (eliminates ForegroundServiceDidNotStartInTimeException on Android 12–16).
+        val fallbackTitle = intent?.getStringExtra(EXTRA_TITLE) ?: "BRAIN BUFFER LIVE"
+        val fallbackText = intent?.getStringExtra(EXTRA_TEXT) ?: "Focus session active"
+        val fallbackRemaining = intent?.getIntExtra(EXTRA_REMAINING_SEC, 0) ?: 0
+        val fallbackRunning = intent?.getBooleanExtra(EXTRA_IS_RUNNING, true) ?: true
+        val immediateNotification = BrainBufferNotificationManager.buildImmediateFallbackNotification(
+            context = applicationContext,
+            title = fallbackTitle,
+            contentText = fallbackText,
+            remainingSec = fallbackRemaining,
+            isRunning = fallbackRunning
+        )
+        startForegroundSafely(immediateNotification)
+
         serviceScope.launch {
             refreshAndMonitor()
         }
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Keep active running session alive; refresh notification state safely if still started
+        serviceScope.launch {
+            val repository = BrainBufferRepository.getInstance(applicationContext)
+            val snapshot = repository.getTimerSnapshotOnce()
+            if (!snapshot.hasStarted) {
+                stopForegroundAndSelf()
+            }
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     private suspend fun refreshAndMonitor() {
         val appContext = applicationContext
-        val repository = BrainBufferRepository(
-            BrainBufferDatabase.getInstance(appContext),
-            UserPreferencesStore(appContext)
-        )
+        val repository = BrainBufferRepository.getInstance(appContext)
         val snapshot = repository.getTimerSnapshotOnce()
         val prefs = repository.getPreferencesOnce()
+        val manualBlocking = repository.getManualBlockingSessionOnce()
+        val nowEpoch = System.currentTimeMillis()
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val manualEnforcing = manualBlocking.isEnforcing(nowEpoch) &&
+            AppUsageAwarenessHelper.hasUsageStatsPermission(appContext)
 
-        if (!snapshot.hasStarted || !prefs.notificationsEnabled || !prefs.notificationPrefs.activeFocusEnabled) {
+        if (!snapshot.hasStarted && !manualEnforcing) {
+            stopForegroundAndSelf()
+            return
+        }
+
+        if (snapshot.hasStarted && (!prefs.notificationsEnabled || !prefs.notificationPrefs.activeFocusEnabled) && !manualEnforcing) {
             stopForegroundAndSelf()
             return
         }
@@ -84,30 +123,46 @@ class FocusTimerService : Service() {
         val subjects = repository.getSubjectsOnce()
         val subjectName = subjects.firstOrNull { it.id == snapshot.selectedSubjectId }?.name ?: "General Study"
 
-        val nowEpoch = System.currentTimeMillis()
-        val nowElapsed = SystemClock.elapsedRealtime()
-
-        if (FocusTimerEngine.isCompleted(snapshot, nowEpoch, nowElapsed)) {
-            completeFromService(appContext, repository, snapshot, subjectName, nowEpoch)
-            stopForegroundAndSelf()
-            return
+        if (snapshot.hasStarted && FocusTimerEngine.isCompleted(snapshot, nowEpoch, nowElapsed)) {
+            completeFromService(appContext, repository, snapshot, subjectName, nowEpoch, nowElapsed)
+            if (!manualEnforcing) {
+                stopForegroundAndSelf()
+                return
+            }
         }
 
-        val notification = BrainBufferNotificationManager.buildActiveTimerNotification(
-            context = appContext,
-            snapshot = snapshot,
-            subjectName = subjectName,
-            prefs = prefs.notificationPrefs,
-            nowEpochMs = nowEpoch,
-            nowElapsedRealtimeMs = nowElapsed,
-            liveUpdatesEnabled = prefs.focusGuardSettings.liveUpdatesEnabled
-        )
+        val notification = if (snapshot.hasStarted) {
+            BrainBufferNotificationManager.buildActiveTimerNotification(
+                context = appContext,
+                snapshot = snapshot,
+                subjectName = subjectName,
+                prefs = prefs.notificationPrefs,
+                nowEpochMs = nowEpoch,
+                nowElapsedRealtimeMs = nowElapsed,
+                liveUpdatesEnabled = prefs.focusGuardSettings.liveUpdatesEnabled
+            )
+        } else {
+            val remainingMin = ((manualBlocking.remainingSeconds(nowEpoch) + 59) / 60).coerceAtLeast(1)
+            val label = if (manualBlocking.endsAtEpochMs > 0L) {
+                "Focus Guard active · ${remainingMin}m left"
+            } else {
+                "Focus Guard active · Monitoring blocked apps"
+            }
+            BrainBufferNotificationManager.buildImmediateFallbackNotification(
+                context = appContext,
+                title = "BRAIN BUFFER · Focus Guard",
+                contentText = label,
+                remainingSec = manualBlocking.remainingSeconds(nowEpoch),
+                isRunning = true
+            )
+        }
 
         startForegroundSafely(notification)
 
         monitorJob?.cancel()
-        if (snapshot.runningSinceEpochMs == null) {
-            // Timer is paused: keep notification visible with Resume/End actions, zero wakeups!
+        val initialTemp = repository.getActiveTempAccessOnce()
+        val hasOpenTemp = initialTemp != null && initialTemp.endedAtEpochMs == null
+        if (snapshot.hasStarted && snapshot.runningSinceEpochMs == null && !manualEnforcing && !hasOpenTemp) {
             return
         }
 
@@ -116,93 +171,283 @@ class FocusTimerService : Service() {
             while (isActive) {
                 val latest = repository.getTimerSnapshotOnce()
                 val latestPrefs = repository.getPreferencesOnce()
-                if (!latest.hasStarted || latest.runningSinceEpochMs == null) {
+                val latestManual = repository.getManualBlockingSessionOnce()
+                val latestTemp = repository.getActiveTempAccessOnce()
+                val epochNow = System.currentTimeMillis()
+                val elapsedNow = SystemClock.elapsedRealtime()
+                val usageGranted = AppUsageAwarenessHelper.hasUsageStatsPermission(appContext)
+                val manualActiveNow = latestManual.isEnforcing(epochNow) && usageGranted
+                val openTempNow = latestTemp != null && latestTemp.endedAtEpochMs == null
+
+                if (latestManual.isActive && !latestManual.isPaused &&
+                    latestManual.endsAtEpochMs > 0L && epochNow >= latestManual.endsAtEpochMs
+                ) {
+                    repository.saveManualBlockingSession(com.example.model.ManualBlockingSession())
+                }
+
+                // Check temporary access expiry promptly without silent renewal
+                if (openTempNow && latestTemp != null && latestTemp.isExpired(epochNow)) {
+                    val vibrationAllowed = latestPrefs.hapticsEnabled && latestPrefs.focusGuardSettings.vibrationEnabled
+                    val posted = BrainBufferNotificationManager.postTemporaryAccessExpiredNotification(
+                        context = appContext,
+                        tempAccessId = latestTemp.id,
+                        appLabel = latestTemp.appLabel,
+                        canExtend = latestTemp.canRequestExtension,
+                        masterNotificationsEnabled = latestPrefs.notificationsEnabled,
+                        soundEnabled = latestPrefs.soundEnabled && latestPrefs.focusGuardSettings.notificationSoundEnabled,
+                        vibrationEnabled = vibrationAllowed
+                    )
+                    if (posted) {
+                        BrainBufferHaptics.perform(
+                            context = appContext,
+                            event = HapticEvent.DISTRACTION_ALERT,
+                            enabled = vibrationAllowed
+                        )
+                    }
+                }
+
+                val timerRunningNow = latest.hasStarted && latest.runningSinceEpochMs != null
+                if (!timerRunningNow && !manualActiveNow && !openTempNow) {
                     if (!latest.hasStarted) {
                         stopForegroundAndSelf()
                     }
                     break
                 }
-                val epochNow = System.currentTimeMillis()
-                val elapsedNow = SystemClock.elapsedRealtime()
-                val remainingSec = FocusTimerEngine.remainingSeconds(latest, epochNow, elapsedNow)
 
-                if (remainingSec <= 0) {
+                val remainingSec = if (timerRunningNow) {
+                    FocusTimerEngine.remainingSeconds(latest, epochNow, elapsedNow)
+                } else {
+                    Int.MAX_VALUE
+                }
+
+                if (timerRunningNow && remainingSec <= 0) {
                     val latestSubjects = repository.getSubjectsOnce()
                     val latestSubject = latestSubjects.firstOrNull { it.id == latest.selectedSubjectId }?.name
                         ?: "General Study"
-                    completeFromService(appContext, repository, latest, latestSubject, epochNow)
-                    stopForegroundAndSelf()
-                    break
+                    completeFromService(appContext, repository, latest, latestSubject, epochNow, elapsedNow)
+                    if (!manualActiveNow) {
+                        stopForegroundAndSelf()
+                        break
+                    }
                 }
 
-                // Determine efficient poll interval: 12s ONLY when opt-in distraction monitoring is active,
-                // otherwise ultra-low-power 30s interval (native OS chronometer handles per-second display).
-                val distractionWatchActive = (latest.isStrictFocus || latest.focusGuardLevel != FocusGuardLevel.NORMAL) &&
-                    latestPrefs.appUsageAwarenessEnabled &&
-                    latestPrefs.focusGuardSettings.distractionWarningsEnabled &&
-                    latestPrefs.notificationPrefs.distractionWarningsEnabled &&
-                    AppUsageAwarenessHelper.hasUsageStatsPermission(appContext)
+                val currentBlockedApps = if (usageGranted) repository.getBlockedAppsOnce() else emptyList()
+                val hasActiveBlocklistRules = (timerRunningNow &&
+                    latestPrefs.focusGuardSettings.blockDuringActiveFocus &&
+                    currentBlockedApps.any { it.isBlockedFor(latest.focusGuardLevel) }) ||
+                    (manualActiveNow && currentBlockedApps.any { it.isBlocked })
 
-                val baseIntervalMs = if (distractionWatchActive) 12_000L else 30_000L
-                val sleepMs = minOf(baseIntervalMs, (remainingSec * 1000L).coerceAtLeast(1_000L))
+                val purposeWatchActive = usageGranted && timerRunningNow && !latest.isOnBreak &&
+                    latestPrefs.focusGuardSettings.distractionWarningsEnabled
+
+                val distractionWatchActive = usageGranted &&
+                    (hasActiveBlocklistRules || purposeWatchActive || (
+                        timerRunningNow &&
+                            (latest.isStrictFocus || latest.focusGuardLevel != FocusGuardLevel.NORMAL) &&
+                            latestPrefs.appUsageAwarenessEnabled &&
+                            latestPrefs.focusGuardSettings.distractionWarningsEnabled &&
+                            latestPrefs.notificationPrefs.distractionWarningsEnabled
+                        ))
+
+                val baseIntervalMs = when {
+                    openTempNow -> 3_000L
+                    hasActiveBlocklistRules || purposeWatchActive -> 4_000L
+                    distractionWatchActive -> 10_000L
+                    else -> 30_000L
+                }
+                val sleepMs = if (timerRunningNow) {
+                    minOf(baseIntervalMs, (remainingSec * 1000L).coerceAtLeast(1_000L))
+                } else {
+                    baseIntervalMs
+                }
                 delay(sleepMs)
 
                 val refreshed = repository.getTimerSnapshotOnce()
-                if (!refreshed.hasStarted || refreshed.runningSinceEpochMs == null) continue
-
+                val refreshedManual = repository.getManualBlockingSessionOnce()
+                val refreshedTemp = repository.getActiveTempAccessOnce()
                 val refreshEpoch = System.currentTimeMillis()
                 val refreshElapsed = SystemClock.elapsedRealtime()
-                if (FocusTimerEngine.isCompleted(refreshed, refreshEpoch, refreshElapsed)) continue
+                val refreshedTimerRunning = refreshed.hasStarted && refreshed.runningSinceEpochMs != null
+                val refreshedManualEnforcing = refreshedManual.isEnforcing(refreshEpoch) &&
+                    AppUsageAwarenessHelper.hasUsageStatsPermission(appContext)
+                val refreshedOpenTemp = refreshedTemp != null && refreshedTemp.endedAtEpochMs == null
+
+                if (!refreshedTimerRunning && !refreshedManualEnforcing && !refreshedOpenTemp) continue
+                if (refreshedTimerRunning && FocusTimerEngine.isCompleted(refreshed, refreshEpoch, refreshElapsed)) continue
 
                 val refreshedPrefs = repository.getPreferencesOnce()
                 val activeSubject = repository.getSubjectsOnce()
                     .firstOrNull { it.id == refreshed.selectedSubjectId }?.name
                     ?: subjectName
 
-                // Optional Usage Access distraction check during active High/Custom Focus
-                if (distractionWatchActive) {
-                    val mappings = repository.getAppCategoryMappingsOnce()
-                    val warning = AppUsageAwarenessHelper.detectUnapprovedAppMismatch(
+                // Purpose -> Activity foreground matching & temporary access expiry monitoring
+                if (distractionWatchActive || refreshedOpenTemp) {
+                    val fgPkg = AppUsageAwarenessHelper.queryCurrentForegroundPackage(
                         context = appContext,
                         enabledByUser = true,
-                        snapshot = refreshed,
-                        userMappings = mappings,
                         nowEpochMs = refreshEpoch
                     )
-                    if (warning != null &&
-                        DistractionAlertCoordinator.shouldEmitAlert(
-                            sessionId = refreshed.sessionId,
-                            packageName = warning.packageName,
-                            nowEpochMs = refreshEpoch,
-                            cooldownSeconds = refreshedPrefs.focusGuardSettings.distractionCooldownSeconds
-                        )
-                    ) {
-                        val posted = BrainBufferNotificationManager.postDistractionWarningNotification(
-                            context = appContext,
-                            snapshot = refreshed,
-                            subjectName = activeSubject,
-                            detectedPackageName = warning.packageName,
-                            detectedAppLabel = warning.appDisplayName,
-                            prefs = refreshedPrefs.notificationPrefs,
-                            masterNotificationsEnabled = refreshedPrefs.notificationsEnabled,
-                            soundEnabled = refreshedPrefs.soundEnabled &&
-                                refreshedPrefs.focusGuardSettings.notificationSoundEnabled,
-                            vibrationEnabled = refreshedPrefs.hapticsEnabled &&
-                                refreshedPrefs.focusGuardSettings.vibrationEnabled
-                        )
-                        if (posted) {
-                            DistractionAlertCoordinator.markNotified(
-                                sessionId = refreshed.sessionId,
-                                packageName = warning.packageName,
-                                nowEpochMs = refreshEpoch
+                    if (fgPkg != null && refreshed.hasStarted) {
+                        val fgLabel = runCatching {
+                            val pm = appContext.packageManager
+                            pm.getApplicationLabel(pm.getApplicationInfo(fgPkg, 0)).toString()
+                        }.getOrDefault(fgPkg.substringAfterLast('.'))
+
+                        when (
+                            val decision = PurposeMatchingEngine.evaluateForegroundApp(
+                                observedPackage = fgPkg,
+                                observedAppLabel = fgLabel,
+                                snapshot = refreshed,
+                                activeTempAccess = refreshedTemp,
+                                nowEpochMs = refreshEpoch,
+                                ownPackageName = appContext.packageName,
+                                gracePeriodSeconds = refreshedPrefs.focusGuardSettings.gracePeriodSeconds,
+                                cooldownSeconds = refreshedPrefs.focusGuardSettings.distractionCooldownSeconds,
+                                enforceGracePeriod = true
                             )
-                            repository.recordDistractionWarning()
+                        ) {
+                            is PurposeMatchingEngine.MatchDecision.TemporaryAccessExpired -> {
+                                val vibrationAllowed = refreshedPrefs.hapticsEnabled &&
+                                    refreshedPrefs.focusGuardSettings.vibrationEnabled
+                                val posted = BrainBufferNotificationManager.postTemporaryAccessExpiredNotification(
+                                    context = appContext,
+                                    tempAccessId = decision.session.id,
+                                    appLabel = decision.session.appLabel,
+                                    canExtend = decision.canExtend,
+                                    masterNotificationsEnabled = refreshedPrefs.notificationsEnabled,
+                                    soundEnabled = refreshedPrefs.soundEnabled &&
+                                        refreshedPrefs.focusGuardSettings.notificationSoundEnabled,
+                                    vibrationEnabled = vibrationAllowed
+                                )
+                                if (posted) {
+                                    BrainBufferHaptics.perform(
+                                        context = appContext,
+                                        event = HapticEvent.DISTRACTION_ALERT,
+                                        enabled = vibrationAllowed
+                                    )
+                                }
+                            }
+
+                            is PurposeMatchingEngine.MatchDecision.PotentialDistraction -> {
+                                if (decision.shouldEmitAlert) {
+                                    val vibrationAllowed = refreshedPrefs.hapticsEnabled &&
+                                        refreshedPrefs.focusGuardSettings.vibrationEnabled
+                                    val blockedApps = repository.getBlockedAppsOnce()
+                                    val isExplicitlyBlocked = blockedApps.any {
+                                        it.packageName.equals(decision.packageName, ignoreCase = true) &&
+                                            it.isBlockedFor(refreshed.focusGuardLevel)
+                                    }
+                                    if (isExplicitlyBlocked || refreshed.allowedPackages.isNotEmpty()) {
+                                        runCatching {
+                                            val blockIntent = FocusBlockedActivity.createIntent(
+                                                context = appContext,
+                                                appName = decision.appLabel,
+                                                packageName = decision.packageName,
+                                                categoryLabel = decision.declaredPurpose.label,
+                                                reason = decision.message
+                                            )
+                                            appContext.startActivity(blockIntent)
+                                        }
+                                    }
+                                    val posted = BrainBufferNotificationManager.postDistractionWarningNotification(
+                                        context = appContext,
+                                        snapshot = refreshed,
+                                        subjectName = decision.sessionName,
+                                        detectedPackageName = decision.packageName,
+                                        detectedAppLabel = decision.appLabel,
+                                        prefs = refreshedPrefs.notificationPrefs,
+                                        masterNotificationsEnabled = refreshedPrefs.notificationsEnabled,
+                                        soundEnabled = refreshedPrefs.soundEnabled &&
+                                            refreshedPrefs.focusGuardSettings.notificationSoundEnabled,
+                                        vibrationEnabled = vibrationAllowed,
+                                        isExplicitlyBlocked = isExplicitlyBlocked || refreshed.allowedPackages.isNotEmpty(),
+                                        categoryLabel = decision.declaredPurpose.label,
+                                        blockReason = decision.message
+                                    )
+                                    if (posted || isExplicitlyBlocked || refreshed.allowedPackages.isNotEmpty()) {
+                                        BrainBufferHaptics.perform(
+                                            context = appContext,
+                                            event = HapticEvent.DISTRACTION_ALERT,
+                                            enabled = vibrationAllowed
+                                        )
+                                        DistractionAlertCoordinator.markNotified(
+                                            sessionId = refreshed.sessionId,
+                                            packageName = decision.packageName,
+                                            nowEpochMs = refreshEpoch
+                                        )
+                                        repository.recordDistractionWarning()
+                                        repository.logInterventionEvent(
+                                            InterventionEventRecord(
+                                                sessionKey = refreshed.sessionId,
+                                                eventType = InterventionEventType.POTENTIAL_DISTRACTION,
+                                                packageName = decision.packageName,
+                                                appLabel = decision.appLabel,
+                                                declaredPurpose = decision.declaredPurpose.label,
+                                                actionTaken = decision.message,
+                                                timestampMs = refreshEpoch,
+                                                dateEpochDay = LocalDate.now().toEpochDay()
+                                            )
+                                        )
+                                        val updatedSnap = FocusTimerEngine.recordDistractionIntervention(
+                                            current = refreshed,
+                                            distractionSeconds = refreshedPrefs.focusGuardSettings.gracePeriodSeconds.coerceAtLeast(15)
+                                        )
+                                        repository.saveTimerSnapshot(updatedSnap)
+                                    }
+                                }
+                            }
+
+                            else -> Unit
+                        }
+                    } else if (refreshedManualEnforcing && fgPkg != null) {
+                        val blockedApps = repository.getBlockedAppsOnce()
+                        val tempAllowances = repository.getTemporaryAllowancesOnce().filter { it.isActive(refreshEpoch) }
+                        val warning = AppUsageAwarenessHelper.evaluateStandaloneBlock(
+                            observedPackage = fgPkg,
+                            blockedApps = blockedApps,
+                            temporaryAllowances = tempAllowances,
+                            nowEpochMs = refreshEpoch,
+                            ownPackageName = appContext.packageName
+                        )
+                        if (warning != null) {
+                            val sessionKeyForAlert = "manual_${refreshedManual.startedAtEpochMs}"
+                            if (DistractionAlertCoordinator.shouldEmitAlert(
+                                    sessionId = sessionKeyForAlert,
+                                    packageName = warning.packageName,
+                                    nowEpochMs = refreshEpoch,
+                                    cooldownSeconds = minOf(refreshedPrefs.focusGuardSettings.distractionCooldownSeconds, 20)
+                                )
+                            ) {
+                                BrainBufferHaptics.perform(
+                                    context = appContext,
+                                    event = HapticEvent.DISTRACTION_ALERT,
+                                    enabled = refreshedPrefs.hapticsEnabled &&
+                                        refreshedPrefs.focusGuardSettings.vibrationEnabled
+                                )
+                                runCatching {
+                                    appContext.startActivity(
+                                        FocusBlockedActivity.createIntent(
+                                            context = appContext,
+                                            appName = warning.appDisplayName,
+                                            packageName = warning.packageName,
+                                            categoryLabel = warning.observedCategory.label,
+                                            reason = warning.message
+                                        )
+                                    )
+                                }
+                                DistractionAlertCoordinator.markNotified(
+                                    sessionId = sessionKeyForAlert,
+                                    packageName = warning.packageName,
+                                    nowEpochMs = refreshEpoch
+                                )
+                                repository.recordDistractionWarning()
+                            }
                         }
                     }
                 }
 
                 // Refresh live progress notification every ~30s to keep battery impact negligible
-                if (refreshEpoch - lastNotificationRefreshMs >= 28_000L) {
+                if (refreshedTimerRunning && refreshEpoch - lastNotificationRefreshMs >= 28_000L) {
                     lastNotificationRefreshMs = refreshEpoch
                     val updatedNotif = BrainBufferNotificationManager.buildActiveTimerNotification(
                         context = appContext,
@@ -224,13 +469,50 @@ class FocusTimerService : Service() {
         repository: BrainBufferRepository,
         snapshot: PersistedTimerSnapshot,
         subjectName: String,
-        nowEpochMs: Long
+        nowEpochMs: Long,
+        nowElapsedMs: Long
     ) {
+        val decision = FocusTimerEngine.evaluateNaturalCompletion(
+            snapshot = snapshot,
+            nowEpochMs = nowEpochMs,
+            nowElapsedRealtimeMs = nowElapsedMs
+        )
+        if (decision !is FocusTimerEngine.SessionCompletionDecision.NaturalCompletion) {
+            return
+        }
         val prefs = repository.getPreferencesOnce()
         val subjects = repository.getSubjectsOnce()
         val subject = subjects.firstOrNull { it.id == snapshot.selectedSubjectId }
-        val sessionKey = snapshot.sessionId.ifBlank { FocusTimerEngine.generateSessionId() }
+        val sessionKey = decision.sessionId
         val todayEpoch = LocalDate.now().toEpochDay()
+
+        // Race-proof deduplication: skip if ViewModel already completed & recorded this sessionKey
+        val latestPersistedSnap = repository.getTimerSnapshotOnce()
+        val isPurposeFocusSession = snapshot.mode == FocusMode.FOCUS && !snapshot.isOnBreak
+        if (latestPersistedSnap.lastCompletedSessionId == sessionKey ||
+            (isPurposeFocusSession && repository.hasPurposeSession(sessionKey))
+        ) {
+            return
+        }
+
+        val openTempSec = repository.getActiveTempAccessOnce()
+            ?.takeIf { it.endedAtEpochMs == null }
+            ?.actualDurationSeconds(nowEpochMs)
+            ?.coerceAtLeast(0)
+            ?: 0
+
+        repository.upsertStudySession(
+            sessionKey = sessionKey,
+            subjectId = subject?.id,
+            subjectName = subject?.name ?: subjectName,
+            startTimeMs = snapshot.activityStartedAtEpochMs ?: (nowEpochMs - decision.actualSeconds * 1000L),
+            endTimeMs = nowEpochMs,
+            totalDurationSeconds = decision.actualSeconds,
+            plannedDurationSeconds = decision.plannedSeconds,
+            sessionStatus = "COMPLETED",
+            focusGuardLevel = snapshot.focusGuardLevel.name,
+            activityType = snapshot.activeActivityType.name
+        )
 
         // Always record into activity_logs (deduplicated by sessionKey)
         repository.recordActivityLog(
@@ -242,9 +524,9 @@ class FocusTimerService : Service() {
                 subjectId = subject?.id,
                 subjectName = subject?.name ?: subjectName,
                 subjectColorHex = subject?.colorHex ?: snapshot.activeActivityType.accentHex,
-                plannedSeconds = snapshot.totalSeconds,
-                actualSeconds = snapshot.totalSeconds,
-                startedAtMs = snapshot.activityStartedAtEpochMs ?: (nowEpochMs - snapshot.totalSeconds * 1000L),
+                plannedSeconds = decision.plannedSeconds,
+                actualSeconds = decision.actualSeconds,
+                startedAtMs = snapshot.activityStartedAtEpochMs ?: (nowEpochMs - decision.actualSeconds * 1000L),
                 endedAtMs = nowEpochMs,
                 dateEpochDay = todayEpoch,
                 wasPlanned = snapshot.activityWasPlanned,
@@ -252,16 +534,42 @@ class FocusTimerService : Service() {
             )
         )
 
+        // Persist PurposeSessionRecord for Intent vs. Reality analytics (never mixes breaks/temp access)
+        if (isPurposeFocusSession) {
+            repository.savePurposeSession(
+                PurposeSessionRecord(
+                    sessionKey = sessionKey,
+                    purposeCategory = snapshot.purposeCategory,
+                    sessionName = snapshot.sessionGoal.ifBlank { snapshot.purposeCategory.label },
+                    allowedPackages = snapshot.allowedPackages.toList(),
+                    allowedAppLabels = snapshot.allowedAppLabels,
+                    plannedSeconds = decision.plannedSeconds,
+                    actualFocusedSeconds = decision.actualSeconds,
+                    breakSeconds = snapshot.accumulatedBreakSeconds,
+                    temporaryAccessSeconds = snapshot.accumulatedTempAccessSeconds + openTempSec,
+                    distractionSeconds = snapshot.accumulatedDistractionSeconds,
+                    interventionCount = snapshot.interventionCount,
+                    status = PurposeSessionRecord.STATUS_COMPLETED,
+                    breakPlanMode = snapshot.breakPlanMode,
+                    linkedTaskId = snapshot.linkedTaskId,
+                    startedAtMs = snapshot.sessionStartedAtEpochMs ?: snapshot.activityStartedAtEpochMs ?: (nowEpochMs - decision.actualSeconds * 1000L),
+                    endedAtMs = nowEpochMs,
+                    dateEpochDay = todayEpoch
+                )
+            )
+            repository.saveActiveTempAccess(null)
+        }
+
         // ONLY focused study activities count toward study stats & garden growth (never breaks/gaming/entertainment)
         if (snapshot.activeActivityCategory.countsAsFocusedStudy && snapshot.mode == FocusMode.FOCUS) {
             val existingSessions = repository.focusSessions.first()
             repository.recordFocusSessionAndGrowGarden(
                 session = FocusSessionRecord(
                     subjectId = subject?.id,
-                    subjectName = subject?.name ?: subjectName,
-                    subjectColorHex = subject?.colorHex ?: 0xFF7B5CFA,
-                    durationSeconds = snapshot.totalSeconds,
-                    plannedSeconds = snapshot.totalSeconds,
+                    subjectName = snapshot.sessionGoal.ifBlank { subject?.name ?: subjectName },
+                    subjectColorHex = subject?.colorHex ?: snapshot.purposeCategory.accentHex,
+                    durationSeconds = decision.actualSeconds,
+                    plannedSeconds = decision.plannedSeconds,
                     sessionGoal = snapshot.sessionGoal,
                     mode = FocusMode.FOCUS,
                     completedAtMs = nowEpochMs,
@@ -290,6 +598,12 @@ class FocusTimerService : Service() {
         BrainBufferNotificationManager.cancelDistractionWarningNotification(appContext)
         DistractionAlertCoordinator.clearSession(snapshot.sessionId)
 
+        BrainBufferHaptics.perform(
+            context = appContext,
+            event = HapticEvent.SESSION_COMPLETE,
+            enabled = prefs.hapticsEnabled
+        )
+
         // Fire deduplicated completion / break / activity reminder notification
         BrainBufferNotificationManager.postCompletionNotification(
             context = appContext,
@@ -303,14 +617,19 @@ class FocusTimerService : Service() {
             extensionMinutes = prefs.focusGuardSettings.customExtensionMinutes
         )
 
-        // Freeze snapshot at 00:00 (paused) while keeping pausedParentSession intact so "Return to Study" works!
-        val completedSnapshot = snapshot.copy(
-            accumulatedFocusedMs = snapshot.totalSeconds * 1000L,
-            runningSinceEpochMs = null,
-            runningSinceElapsedRealtimeMs = null,
-            hasStarted = false,
-            strictFocusDndActive = false
-        )
+        // Freeze snapshot with lastCompletedSessionId recorded so process recreation never re-completes or restarts it!
+        val completedSnapshot = if (snapshot.pausedParentSession != null) {
+            snapshot.copy(
+                accumulatedFocusedMs = snapshot.totalSeconds * 1000L,
+                runningSinceEpochMs = null,
+                runningSinceElapsedRealtimeMs = null,
+                hasStarted = false,
+                strictFocusDndActive = false,
+                lastCompletedSessionId = sessionKey
+            )
+        } else {
+            FocusTimerEngine.markCompletedAndReset(snapshot, sessionKey)
+        }
         repository.saveTimerSnapshot(completedSnapshot)
         com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
     }
@@ -354,6 +673,10 @@ class FocusTimerService : Service() {
     companion object {
         private const val ACTION_SYNC = "com.example.brainbuffer.service.SYNC"
         private const val ACTION_STOP = "com.example.brainbuffer.service.STOP"
+        private const val EXTRA_TITLE = "bb_fgs_title"
+        private const val EXTRA_TEXT = "bb_fgs_text"
+        private const val EXTRA_REMAINING_SEC = "bb_fgs_remaining_sec"
+        private const val EXTRA_IS_RUNNING = "bb_fgs_is_running"
 
         fun syncWithSnapshot(context: Context, snapshot: PersistedTimerSnapshot) {
             val appContext = context.applicationContext
@@ -364,15 +687,53 @@ class FocusTimerService : Service() {
             if (!BrainBufferNotificationManager.hasNotificationPermission(appContext)) {
                 return
             }
+            val nowEpoch = System.currentTimeMillis()
+            val nowElapsed = SystemClock.elapsedRealtime()
+            val remainingSec = FocusTimerEngine.remainingSeconds(snapshot, nowEpoch, nowElapsed)
+            val isRunning = snapshot.runningSinceEpochMs != null
+            val formattedRemaining = BrainBufferNotificationManager.formatMinSec(remainingSec)
             val intent = Intent(appContext, FocusTimerService::class.java).apply {
                 action = ACTION_SYNC
+                putExtra(EXTRA_TITLE, if (isRunning) "BRAIN BUFFER LIVE" else "BRAIN BUFFER · Paused")
+                putExtra(
+                    EXTRA_TEXT,
+                    "${snapshot.activeActivityLabel} · $formattedRemaining remaining"
+                )
+                putExtra(EXTRA_REMAINING_SEC, remainingSec)
+                putExtra(EXTRA_IS_RUNNING, isRunning)
             }
             try {
                 ContextCompat.startForegroundService(appContext, intent)
             } catch (_: Exception) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    // Explicitly handled without crashing on Android 12+ background FGS restrictions
-                }
+                // Handled gracefully without crashing on Android 12+ background FGS restrictions
+            }
+        }
+
+        fun syncForManualBlocking(context: Context, session: com.example.model.ManualBlockingSession) {
+            val appContext = context.applicationContext
+            val now = System.currentTimeMillis()
+            if (!session.isEnforcing(now)) {
+                return
+            }
+            if (!BrainBufferNotificationManager.hasNotificationPermission(appContext)) {
+                return
+            }
+            val remainingSec = session.remainingSeconds(now)
+            val intent = Intent(appContext, FocusTimerService::class.java).apply {
+                action = ACTION_SYNC
+                putExtra(EXTRA_TITLE, "BRAIN BUFFER · Focus Guard")
+                putExtra(
+                    EXTRA_TEXT,
+                    if (remainingSec > 0) "Blocking distractions · ${BrainBufferNotificationManager.formatMinSec(remainingSec)} left"
+                    else "Blocking distractions"
+                )
+                putExtra(EXTRA_REMAINING_SEC, remainingSec)
+                putExtra(EXTRA_IS_RUNNING, true)
+            }
+            try {
+                ContextCompat.startForegroundService(appContext, intent)
+            } catch (_: Exception) {
+                // Handled gracefully on Android 12+ background FGS restrictions
             }
         }
 

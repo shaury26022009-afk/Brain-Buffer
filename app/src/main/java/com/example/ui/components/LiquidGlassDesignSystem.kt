@@ -30,7 +30,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -41,6 +46,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
@@ -160,25 +166,25 @@ data class LiquidGlassTokens(
             val springStiff = if (reducedMotion) 1200f else 340f * renderQuality.springStiffnessScale
 
             return if (isDark) {
-                // Pure neutral charcoal glass over #000000 AMOLED base — zero navy/blue cast.
+                // Pure neutral charcoal glass over #000000 AMOLED base — crisp physical OLED separation.
                 LiquidGlassTokens(
                     isDark = true,
                     profile = renderQuality.profile,
-                    surfaceTop = Color(0xE617171B),
-                    surfaceBottom = Color(0xEC0E0E11),
-                    subtleTop = Color(0xD8111114),
-                    subtleBottom = Color(0xE40A0A0D),
-                    elevatedTop = Color(0xEE1F1E25),
-                    elevatedBottom = Color(0xF2121216),
-                    accentTop = Color(0xE6221C34),
-                    accentBottom = Color(0xEE141120),
-                    sheetBackground = Color(0xF7121216),
-                    borderTop = Color.White.copy(alpha = 0.22f * reflectionScale),
-                    borderMid = Color.White.copy(alpha = 0.08f * reflectionScale),
-                    borderBottom = Color.White.copy(alpha = 0.13f * reflectionScale),
-                    innerReflectionTop = Color.White.copy(alpha = 0.085f * reflectionScale),
-                    lavenderReflection = LavenderLuminous.copy(alpha = 0.14f * reflectionScale),
-                    shadowColor = Color(0xAA000000),
+                    surfaceTop = Color(0xEC1B1B21),
+                    surfaceBottom = Color(0xF0101014),
+                    subtleTop = Color(0xDF141419),
+                    subtleBottom = Color(0xE80C0C10),
+                    elevatedTop = Color(0xF224232C),
+                    elevatedBottom = Color(0xF515151B),
+                    accentTop = Color(0xEC27203C),
+                    accentBottom = Color(0xF2171326),
+                    sheetBackground = Color(0xF8131318),
+                    borderTop = Color.White.copy(alpha = 0.26f * reflectionScale),
+                    borderMid = Color.White.copy(alpha = 0.09f * reflectionScale),
+                    borderBottom = Color.White.copy(alpha = 0.16f * reflectionScale),
+                    innerReflectionTop = Color.White.copy(alpha = 0.105f * reflectionScale),
+                    lavenderReflection = LavenderLuminous.copy(alpha = 0.16f * reflectionScale),
+                    shadowColor = Color(0xB8000000),
                     shadowElevation = if (!renderQuality.enableAmbientShadows || isPerf) 0.dp else 6.dp,
                     blurRadiusDp = resolvedBlurDp,
                     enableBlur = resolvedEnableBlur,
@@ -197,21 +203,21 @@ data class LiquidGlassTokens(
                 LiquidGlassTokens(
                     isDark = false,
                     profile = renderQuality.profile,
-                    surfaceTop = Color(0xF5FFFFFF),
-                    surfaceBottom = Color(0xEBF6F2FD),
-                    subtleTop = Color(0xE8F9F6FE),
-                    subtleBottom = Color(0xE2F0EAF9),
-                    elevatedTop = Color(0xFAFFFFFF),
-                    elevatedBottom = Color(0xF0F4EEFC),
-                    accentTop = Color(0xF2EFE9FF),
-                    accentBottom = Color(0xEAE2D6FF),
-                    sheetBackground = Color(0xFAFAF8FE),
-                    borderTop = Color.White.copy(alpha = 0.96f),
-                    borderMid = Color(0xFFC9BAFA).copy(alpha = 0.36f * reflectionScale),
-                    borderBottom = Color(0xFFD6CAF6).copy(alpha = 0.56f * reflectionScale),
-                    innerReflectionTop = Color.White.copy(alpha = 0.72f * reflectionScale),
-                    lavenderReflection = SoftPurple.copy(alpha = 0.10f * reflectionScale),
-                    shadowColor = Color(0x1E23115E),
+                    surfaceTop = Color(0xF7FFFFFF),
+                    surfaceBottom = Color(0xEEF5F0FD),
+                    subtleTop = Color(0xECF9F6FE),
+                    subtleBottom = Color(0xE6EFE9F9),
+                    elevatedTop = Color(0xFCFFFFFF),
+                    elevatedBottom = Color(0xF4F2ECFC),
+                    accentTop = Color(0xF5EFE8FF),
+                    accentBottom = Color(0xECE1D5FF),
+                    sheetBackground = Color(0xFCFAF8FE),
+                    borderTop = Color.White.copy(alpha = 0.98f),
+                    borderMid = Color(0xFFC5B4FA).copy(alpha = 0.38f * reflectionScale),
+                    borderBottom = Color(0xFFD2C4F6).copy(alpha = 0.58f * reflectionScale),
+                    innerReflectionTop = Color.White.copy(alpha = 0.78f * reflectionScale),
+                    lavenderReflection = SoftPurple.copy(alpha = 0.12f * reflectionScale),
+                    shadowColor = Color(0x2223115E),
                     shadowElevation = if (!renderQuality.enableAmbientShadows || isPerf) 1.dp else 5.dp,
                     blurRadiusDp = resolvedBlurDp,
                     enableBlur = resolvedEnableBlur,
@@ -767,15 +773,18 @@ fun <T> LiquidGlassSegmentedControl(
         val capsuleH = (totalHeightPx - padPx * 2f).coerceAtLeast(1f)
         val capsuleR = with(density) { 12.dp.toPx() }
 
+        val capsulePath = remember { Path() }
+
         // Single moving refractive glass selection capsule
         Canvas(modifier = Modifier.fillMaxSize()) {
             val left = padPx + slideAnim.value * slotW
             val top = padPx
             val corner = CornerRadius(capsuleR, capsuleR)
             val rect = Rect(Offset(left, top), Size(slotW, capsuleH))
-            val path = Path().apply { addRoundRect(RoundRect(rect, corner)) }
+            capsulePath.reset()
+            capsulePath.addRoundRect(RoundRect(rect, corner))
 
-            clipPath(path) {
+            clipPath(capsulePath) {
                 if (glass.isDark) {
                     drawRect(
                         brush = Brush.verticalGradient(
@@ -1077,4 +1086,179 @@ fun LiquidGlassDialogCard(
         contentPadding = contentPadding,
         content = content
     )
+}
+
+/**
+ * Translucent Liquid Glass search field for instant offline filtering across tasks and subjects.
+ */
+@Composable
+fun LiquidGlassSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    inputTestTag: String = "liquid_glass_search_input"
+) {
+    val glass = BrainBufferThemeTokens.glass
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .clip(shape)
+            .drawBehind {
+                val r = 16.dp.toPx()
+                val corner = CornerRadius(r, r)
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(glass.subtleTop, glass.subtleBottom)),
+                    cornerRadius = corner
+                )
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0.0f to glass.innerReflectionTop,
+                            0.45f to Color.Transparent
+                        )
+                    ),
+                    cornerRadius = corner
+                )
+                val strokePx = 0.95.dp.toPx()
+                val inset = strokePx * 0.5f
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(glass.borderTop, glass.borderBottom)),
+                    topLeft = Offset(inset, inset),
+                    size = Size((size.width - strokePx).coerceAtLeast(1f), (size.height - strokePx).coerceAtLeast(1f)),
+                    cornerRadius = CornerRadius((r - inset).coerceAtLeast(1f), (r - inset).coerceAtLeast(1f)),
+                    style = Stroke(width = strokePx)
+                )
+            }
+            .padding(start = 14.dp, end = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Search,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(19.dp)
+        )
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            if (query.isEmpty()) {
+                Text(
+                    text = placeholder,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag(inputTestTag)
+            )
+        }
+        if (query.isNotEmpty()) {
+            IconButton(
+                onClick = { onQueryChange("") },
+                modifier = Modifier
+                    .size(36.dp)
+                    .testTag("${inputTestTag}_clear")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Clear search",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Compact Liquid Glass status banner for honest system permission notices and inline guidance.
+ */
+@Composable
+fun LiquidGlassStatusBanner(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    accentColor: Color,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onActionClick: (() -> Unit)? = null,
+    actionTestTag: String = "liquid_glass_banner_action"
+) {
+    LiquidGlassCard(
+        modifier = modifier.fillMaxWidth(),
+        tone = LiquidGlassTone.SUBTLE,
+        cornerRadius = 18.dp,
+        tintOverlay = accentColor.copy(alpha = 0.08f),
+        borderAccent = accentColor.copy(alpha = 0.45f),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            LiquidGlassIconContainer(
+                size = 38.dp,
+                accentColor = accentColor,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (actionLabel != null && onActionClick != null) {
+                LiquidGlassSecondaryButton(
+                    onClick = onActionClick,
+                    accentBorder = accentColor,
+                    contentColor = accentColor,
+                    cornerRadius = 12.dp,
+                    height = 36.dp,
+                    contentPadding = PaddingValues(horizontal = 11.dp, vertical = 4.dp),
+                    modifier = Modifier.testTag(actionTestTag)
+                ) {
+                    Text(
+                        text = actionLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
 }

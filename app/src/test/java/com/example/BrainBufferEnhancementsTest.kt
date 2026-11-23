@@ -22,7 +22,7 @@ import com.example.model.UserPreferences
 import com.example.ui.components.FocusSoundscapeSheetContent
 import com.example.ui.screens.FocusScreen
 import com.example.ui.screens.HomeScreen
-import com.example.ui.screens.InsightsStandaloneScreen
+import com.example.ui.screens.InsightsPrimaryScreen
 import com.example.ui.screens.MindResetScreen
 import com.example.ui.theme.BrainBufferTheme
 import com.example.ui.theme.ProvideAdaptiveMetrics
@@ -171,8 +171,8 @@ class BrainBufferEnhancementsTest {
     }
 
     @Test
-    fun `Home Smart Study Coach, Focus Soundscape Sheet, Insights 28-Day Heatmap, and MindReset render smoothly`() {
-        var coachLaunched = false
+    fun `Home Purpose launcher and Focus setup render smoothly`() {
+        var focusOpened = false
         val soundController = AmbientSoundscapeController(enableHardwareAudio = false)
 
         composeRule.setContent {
@@ -181,60 +181,34 @@ class BrainBufferEnhancementsTest {
                     ProvideAdaptiveMetrics(maxWidth = 412.dp, maxHeight = 915.dp) {
                         HomeScreen(
                             uiState = BrainBufferUiState(),
-                            greeting = "Good evening",
-                            formattedDate = "Thu, Nov 19",
-                            onRefreshMotivation = {},
-                            onStartFocus = { coachLaunched = true },
-                            onOpenFocus = {},
-                            onToggleTask = {},
-                            onQuickAddTask = { _, _ -> },
-                            onOpenPlanner = {},
-                            onOpenGarden = {},
-                            onOpenInsights = {},
-                            onOpenMindReset = {},
-                            onOpenProfile = {}
+                            onOpenFocus = { focusOpened = true }
                         )
                     }
                 }
             }
         }
 
-        composeRule.onNodeWithTag("home_study_coach_card").assertIsDisplayed()
-        composeRule.onNodeWithTag("home_study_coach_action").performClick()
+        composeRule.onNodeWithTag("home_today_alignment_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("home_start_focus_button").performClick()
         composeRule.waitForIdle()
-        assertTrue(coachLaunched)
+        assertTrue(focusOpened)
     }
 
     @Test
-    fun `Focus Soundscape sheet and Insights momentum heatmap are interactive`() {
+    fun `Focus setup renders headline and syncs with AmbientSoundscapeController`() {
         val soundController = AmbientSoundscapeController(enableHardwareAudio = false)
 
         composeRule.setContent {
             BrainBufferTheme(themeMode = ThemeMode.DARK) {
                 CompositionLocalProvider(LocalAmbientSoundscapeController provides soundController) {
                     ProvideAdaptiveMetrics(maxWidth = 412.dp, maxHeight = 915.dp) {
-                        FocusScreen(
-                            uiState = BrainBufferUiState(),
-                            onSelectMode = {},
-                            onSetDuration = {},
-                            onSelectSubject = {},
-                            onAddSubject = {},
-                            onUpdateSessionGoal = {},
-                            onToggleZenMode = {},
-                            onStartOrResume = {},
-                            onPause = {},
-                            onReset = {},
-                            onCompleteNow = {},
-                            onDismissCelebration = {},
-                            onOpenGarden = {},
-                            onOpenMindReset = {}
-                        )
+                        FocusScreen(uiState = BrainBufferUiState())
                     }
                 }
             }
         }
 
-        composeRule.onNodeWithTag("focus_soundscape_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("focus_setup_headline").assertIsDisplayed()
         soundController.selectSoundscape(AmbientSoundscape.SOFT_RAIN, autoPlay = true)
         composeRule.waitForIdle()
         assertEquals(AmbientSoundscape.SOFT_RAIN, soundController.state.value.selected)
@@ -262,17 +236,16 @@ class BrainBufferEnhancementsTest {
     }
 
     @Test
-    fun `InsightsStandaloneScreen renders 28-day study momentum heatmap and MindReset renders Liquid Glass controls`() {
+    fun `InsightsPrimaryScreen renders Intent vs Reality card and methodology honesty`() {
         composeRule.setContent {
             BrainBufferTheme(themeMode = ThemeMode.DARK) {
-                InsightsStandaloneScreen(
-                    uiState = BrainBufferUiState(),
-                    onBack = {}
+                InsightsPrimaryScreen(
+                    uiState = BrainBufferUiState()
                 )
             }
         }
-        composeRule.onNodeWithTag("insights_momentum_heatmap_card").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("insights_peak_window_badge").assertIsDisplayed()
+        composeRule.onNodeWithTag("insights_screen").assertIsDisplayed()
+        composeRule.onNodeWithTag("insights_alignment_hero_card").assertIsDisplayed()
     }
 
     @Test

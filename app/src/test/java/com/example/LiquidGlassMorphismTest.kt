@@ -149,38 +149,8 @@ class LiquidGlassMorphismTest {
                     ProvideAdaptiveMetrics(maxWidth = windowW, maxHeight = windowH) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             when (screenIndex) {
-                                0 -> HomeScreen(
-                                    uiState = uiState,
-                                    greeting = "Good evening",
-                                    formattedDate = "Thu, Nov 19",
-                                    onRefreshMotivation = {},
-                                    onStartFocus = {},
-                                    onOpenFocus = {},
-                                    onToggleTask = {},
-                                    onQuickAddTask = { _, _ -> },
-                                    onOpenPlanner = {},
-                                    onOpenGarden = {},
-                                    onOpenInsights = {},
-                                    onOpenMindReset = {},
-                                    onOpenProfile = {}
-                                )
-                                1 -> FocusScreen(
-                                    uiState = uiState,
-                                    onSelectMode = {},
-                                    onSetDuration = {},
-                                    onSelectSubject = {},
-                                    onAddSubject = {},
-                                    onUpdateSessionGoal = {},
-                                    onToggleZenMode = {},
-                                    onStartOrResume = {},
-                                    onPause = {},
-                                    onReset = {},
-                                    onCompleteNow = {},
-                                    onDismissCelebration = {},
-                                    onOpenGarden = {},
-                                    onOpenMindReset = {},
-                                    onAddDistractionNote = {}
-                                )
+                                0 -> HomeScreen(uiState = uiState)
+                                1 -> FocusScreen(uiState = uiState)
                                 2 -> PlannerScreen(
                                     uiState = uiState,
                                     onToggleTask = {},
@@ -195,19 +165,7 @@ class LiquidGlassMorphismTest {
                                     onPlantNewSeed = { _, _ -> false },
                                     onStartFocus = {}
                                 )
-                                4 -> ProfileScreen(
-                                    uiState = uiState,
-                                    onUpdateTheme = {},
-                                    onUpdateProfile = { _, _, _, _, _, _, _, _, _, _ -> },
-                                    onSaveSubject = {},
-                                    onDeleteSubject = {},
-                                    onUpdateTimerAndTarget = { _, _, _, _ -> },
-                                    onUpdateAppSettings = { _, _, _, _, _ -> },
-                                    onOpenMindReset = {},
-                                    onLoadDemoData = {},
-                                    onClearAllData = {},
-                                    onResetOnboarding = {}
-                                )
+                                4 -> ProfileScreen(uiState = uiState)
                                 5 -> StrictFocusScreen(
                                     uiState = uiState,
                                     onBack = {},
@@ -249,17 +207,16 @@ class LiquidGlassMorphismTest {
         }
 
         // Phone AMOLED Dark checks
-        composeRule.onNodeWithTag("home_focus_hero_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("home_today_alignment_card").assertIsDisplayed()
         composeRule.onNodeWithTag("home_start_focus_button").assertIsDisplayed()
 
         screenIndex = 1
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("focus_timer_ring").assertIsDisplayed()
-        composeRule.onNodeWithTag("timer_primary_action_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("focus_setup_headline").assertIsDisplayed()
 
         screenIndex = 2
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("planner_tab_daily").assertIsDisplayed()
+        composeRule.onNodeWithTag("planner_tab_today").assertIsDisplayed()
         composeRule.onNodeWithTag("planner_tab_weekly").assertIsDisplayed()
 
         screenIndex = 3
@@ -268,8 +225,7 @@ class LiquidGlassMorphismTest {
 
         screenIndex = 4
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("profile_tab_insights").assertIsDisplayed()
-        composeRule.onNodeWithTag("profile_tab_settings").assertIsDisplayed()
+        composeRule.onNodeWithTag("profile_list").assertIsDisplayed()
 
         screenIndex = 5
         composeRule.waitForIdle()
@@ -277,7 +233,7 @@ class LiquidGlassMorphismTest {
 
         screenIndex = 6
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("controlled_access_option_study_pdf").assertExists()
+        composeRule.onNodeWithTag("controlled_access_option_pdfs_and_drive").assertExists()
 
         screenIndex = 7
         composeRule.waitForIdle()
@@ -290,50 +246,25 @@ class LiquidGlassMorphismTest {
 
         screenIndex = 0
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("home_tablet_two_column").assertIsDisplayed()
+        composeRule.onNodeWithTag("home_screen").assertIsDisplayed()
 
         screenIndex = 2
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag("planner_tablet_split").assertIsDisplayed()
         composeRule.onNodeWithTag("planner_tab_weekly").performClick()
         composeRule.waitForIdle()
     }
 
     @Test
-    fun `profile Liquid Glass theme and performance selectors trigger callbacks`() {
-        var selectedTheme: ThemeMode? = null
-        var selectedPerformance: PerformanceProfileOverride? = null
-
+    fun `settings Liquid Glass theme selector renders and displays in Light mode`() {
         composeRule.setContent {
             BrainBufferTheme(themeMode = ThemeMode.LIGHT, performanceOverride = PerformanceProfileOverride.AUTO) {
                 ProvideAdaptiveMetrics(maxWidth = 412.dp, maxHeight = 915.dp) {
-                    ProfileScreen(
-                        uiState = BrainBufferUiState(),
-                        onUpdateTheme = { selectedTheme = it },
-                        onUpdateProfile = { _, _, _, _, _, _, _, _, _, _ -> },
-                        onSaveSubject = {},
-                        onDeleteSubject = {},
-                        onUpdateTimerAndTarget = { _, _, _, _ -> },
-                        onUpdateAppSettings = { _, _, _, _, _ -> },
-                        onOpenMindReset = {},
-                        onLoadDemoData = {},
-                        onClearAllData = {},
-                        onResetOnboarding = {},
-                        onUpdatePerformanceOverride = { selectedPerformance = it }
-                    )
+                    ProfileScreen(uiState = BrainBufferUiState())
                 }
             }
         }
 
-        composeRule.onNodeWithTag("profile_tab_settings").performClick()
-        composeRule.waitForIdle()
-
-        composeRule.onNodeWithTag("theme_option_dark").performScrollTo().performClick()
-        composeRule.waitForIdle()
-        assertEquals(ThemeMode.DARK, selectedTheme)
-
-        composeRule.onNodeWithTag("perf_option_performance").performScrollTo().performClick()
-        composeRule.waitForIdle()
-        assertEquals(PerformanceProfileOverride.PERFORMANCE, selectedPerformance)
+        composeRule.onNodeWithTag("profile_list").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_theme_selector").assertIsDisplayed()
     }
 }

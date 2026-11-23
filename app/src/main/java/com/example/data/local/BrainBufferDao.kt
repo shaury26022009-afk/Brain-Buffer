@@ -33,6 +33,9 @@ interface StudyTaskDao {
     @Query("SELECT * FROM study_tasks ORDER BY isCompleted ASC, dueDateEpochDay ASC, createdAtMs DESC")
     fun observeAll(): Flow<List<StudyTaskEntity>>
 
+    @Query("SELECT * FROM study_tasks ORDER BY isCompleted ASC, dueDateEpochDay ASC, createdAtMs DESC")
+    suspend fun getAllOnce(): List<StudyTaskEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(entity: StudyTaskEntity): Long
 
@@ -53,6 +56,9 @@ interface StudyTaskDao {
 interface FocusSessionDao {
     @Query("SELECT * FROM focus_sessions ORDER BY completedAtMs DESC")
     fun observeAll(): Flow<List<FocusSessionEntity>>
+
+    @Query("SELECT * FROM focus_sessions ORDER BY completedAtMs DESC")
+    suspend fun getAllOnce(): List<FocusSessionEntity>
 
     @Query("SELECT COUNT(*) FROM focus_sessions WHERE sessionKey = :sessionKey AND sessionKey != ''")
     suspend fun countBySessionKey(sessionKey: String): Int
@@ -165,3 +171,113 @@ interface AppCategoryMappingDao {
     @Query("DELETE FROM app_category_mappings")
     suspend fun deleteAll()
 }
+
+@Dao
+interface StudySessionDao {
+    @Query("SELECT * FROM study_sessions ORDER BY updatedAtMs DESC")
+    fun observeAll(): Flow<List<StudySessionEntity>>
+
+    @Query("SELECT * FROM study_sessions WHERE sessionKey = :sessionKey LIMIT 1")
+    suspend fun getBySessionKey(sessionKey: String): StudySessionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: StudySessionEntity): Long
+
+    @Query("DELETE FROM study_sessions")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface BlockedAppDao {
+    @Query("SELECT * FROM blocked_apps ORDER BY appLabel ASC")
+    fun observeAll(): Flow<List<BlockedAppEntity>>
+
+    @Query("SELECT * FROM blocked_apps ORDER BY appLabel ASC")
+    suspend fun getAllOnce(): List<BlockedAppEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: BlockedAppEntity)
+
+    @Query("DELETE FROM blocked_apps WHERE packageName = :packageName")
+    suspend fun deleteByPackage(packageName: String)
+
+    @Query("DELETE FROM blocked_apps")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface StudyResourceDao {
+    @Query("SELECT * FROM study_resources ORDER BY lastOpenedAtMs DESC, createdAtMs DESC")
+    fun observeAll(): Flow<List<StudyResourceEntity>>
+
+    @Query("SELECT * FROM study_resources ORDER BY lastOpenedAtMs DESC, createdAtMs DESC")
+    suspend fun getAllOnce(): List<StudyResourceEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(entity: StudyResourceEntity): Long
+
+    @Query("UPDATE study_resources SET lastOpenedAtMs = :openedAtMs WHERE id = :id")
+    suspend fun markOpened(id: Long, openedAtMs: Long)
+
+    @Query("DELETE FROM study_resources WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM study_resources")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface SyncOutboxDao {
+    @Query("SELECT * FROM sync_outbox ORDER BY createdAtMs ASC")
+    suspend fun getPendingOnce(): List<SyncOutboxEntity>
+
+    @Query("SELECT COUNT(*) FROM sync_outbox")
+    fun observePendingCount(): Flow<Int>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun enqueue(entity: SyncOutboxEntity): Long
+
+    @Query("DELETE FROM sync_outbox WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("UPDATE sync_outbox SET retryCount = retryCount + 1, lastError = :error WHERE id = :id")
+    suspend fun markFailed(id: Long, error: String)
+
+    @Query("DELETE FROM sync_outbox")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface PurposeSessionDao {
+    @Query("SELECT * FROM purpose_sessions ORDER BY endedAtMs DESC")
+    fun observeAll(): Flow<List<PurposeSessionEntity>>
+
+    @Query("SELECT * FROM purpose_sessions ORDER BY endedAtMs DESC")
+    suspend fun getAllOnce(): List<PurposeSessionEntity>
+
+    @Query("SELECT COUNT(*) FROM purpose_sessions WHERE sessionKey = :sessionKey AND sessionKey != ''")
+    suspend fun countBySessionKey(sessionKey: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: PurposeSessionEntity): Long
+
+    @Query("DELETE FROM purpose_sessions")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface InterventionEventDao {
+    @Query("SELECT * FROM intervention_events ORDER BY timestampMs DESC")
+    fun observeAll(): Flow<List<InterventionEventEntity>>
+
+    @Query("SELECT * FROM intervention_events ORDER BY timestampMs DESC")
+    suspend fun getAllOnce(): List<InterventionEventEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(entity: InterventionEventEntity): Long
+
+    @Query("DELETE FROM intervention_events")
+    suspend fun deleteAll()
+}
+
+

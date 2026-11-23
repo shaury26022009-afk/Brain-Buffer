@@ -8,7 +8,9 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -20,6 +22,8 @@ import com.example.model.NotificationPreferences
 import com.example.model.PersistedTimerSnapshot
 import com.example.model.StudyActivityType
 import com.example.service.TimerNotificationActionReceiver
+import com.example.system.BrainBufferHaptics
+import com.example.system.HapticEvent
 import java.time.LocalTime
 import java.util.Collections
 
@@ -30,7 +34,7 @@ import java.util.Collections
  */
 object BrainBufferNotificationManager {
 
-    const val CHANNEL_ACTIVE_FOCUS = "bb_active_focus"
+    const val CHANNEL_ACTIVE_FOCUS = "bb_active_focus_live_v2"
     const val CHANNEL_DISTRACTION_WARNINGS = "bb_distraction_warnings"
     const val CHANNEL_BREAK_REMINDERS = "bb_break_reminders"
     const val CHANNEL_ACTIVITY_REMINDERS = "bb_activity_reminders"
@@ -45,9 +49,11 @@ object BrainBufferNotificationManager {
     const val ID_EXAM_REMINDER = 1004
     const val ID_STUDY_REMINDER = 1005
     const val ID_DISTRACTION_WARNING = 1006
+    const val ID_TEMP_ACCESS_EXPIRED = 1007
 
     const val EXTRA_OPEN_ROUTE = "bb_open_route"
     const val EXTRA_OPEN_CONTROLLED_ACCESS = "bb_open_controlled_access"
+    const val EXTRA_OPEN_CHANGE_PURPOSE = "bb_open_change_purpose"
 
     private val postedCompletionSessionKeys: MutableSet<String> =
         Collections.synchronizedSet(LinkedHashSet())
@@ -60,9 +66,11 @@ object BrainBufferNotificationManager {
             NotificationChannel(
                 CHANNEL_ACTIVE_FOCUS,
                 "Active focus sessions (Live)",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Persistent live study & temporary activity timer with quick controls"
+                setSound(null, null)
+                enableVibration(false)
                 setShowBadge(false)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             },
@@ -72,6 +80,8 @@ object BrainBufferNotificationManager {
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Gentle study reminders when switching to an unapproved app during High Focus"
+                enableVibration(true)
+                vibrationPattern = BrainBufferHaptics.waveformFor(HapticEvent.DISTRACTION_ALERT).timingsMs
                 lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             },
             NotificationChannel(
@@ -115,6 +125,8 @@ object BrainBufferNotificationManager {
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Celebrations and wrap-up actions when focus blocks complete"
+                enableVibration(true)
+                vibrationPattern = BrainBufferHaptics.waveformFor(HapticEvent.SESSION_COMPLETE).timingsMs
             }
         )
 
@@ -130,6 +142,97 @@ object BrainBufferNotificationManager {
         } else {
             NotificationManagerCompat.from(context).areNotificationsEnabled()
         }
+    }
+
+    fun openAppNotificationSettings(context: Context) {
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(fallback) }
+        }
+    }
+
+    /**
+     * Lightweight synchronous notification built immediately inside FocusTimerService.onStartCommand()
+     * so startForeground() is guaranteed to run before any async IO (prevents Android 12-16 FGS timeout).
+     */
+    fun buildImmediateFallbackNotification(
+        context: Context,
+        title: String,
+        contentText: String,
+        remainingSec: Int,
+        isRunning: Boolean
+    ): Notification {
+        ensureChannels(context)
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_ROUTE, "focus")
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            2001,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder = NotificationCompat.Builder(context, CHANNEL_ACTIVE_FOCUS)
+            .setSmallIcon(R.drawable.ic_stat_brain_buffer)
+            .setContentTitle(title.ifBlank { "BRAIN BUFFER LIVE" })
+            .setContentText(contentText.ifBlank { "Focus session in progress" })
+            .setContentIntent(contentPendingIntent)
+            .setOngoing(isRunning)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setColor(0xFF7B5CFA.toInt())
+
+        if (isRunning && remainingSec > 0) {
+            builder
+                .setShowWhen(true)
+                .setWhen(System.currentTimeMillis() + remainingSec * 1000L)
+                .setUsesChronometer(true)
+                .setChronometerCountDown(true)
+        }
+        return builder.build()
+    }
+
+    /**
+     * Directly posts or updates the live active-timer notification without requiring a foreground
+     * service restart — ensures Pause/Resume/Extend/Return notification taps always reflect
+     * immediately even when the app is backgrounded on Android 12-16.
+     */
+    fun postOrUpdateActiveTimerNotification(
+        context: Context,
+        snapshot: PersistedTimerSnapshot,
+        subjectName: String,
+        prefs: NotificationPreferences,
+        masterNotificationsEnabled: Boolean,
+        nowEpochMs: Long = System.currentTimeMillis(),
+        nowElapsedRealtimeMs: Long? = null,
+        liveUpdatesEnabled: Boolean = true
+    ): Boolean {
+        if (!snapshot.hasStarted || !masterNotificationsEnabled || !prefs.activeFocusEnabled) {
+            cancelActiveTimerNotification(context)
+            return false
+        }
+        val notification = buildActiveTimerNotification(
+            context = context,
+            snapshot = snapshot,
+            subjectName = subjectName,
+            prefs = prefs,
+            nowEpochMs = nowEpochMs,
+            nowElapsedRealtimeMs = nowElapsedRealtimeMs,
+            liveUpdatesEnabled = liveUpdatesEnabled
+        )
+        return notifySafely(context, ID_ACTIVE_TIMER, notification)
     }
 
     fun isWithinQuietHours(
@@ -309,10 +412,10 @@ object BrainBufferNotificationManager {
             )
         }
 
-        // Action 3: End
+        // Action 3: Finish
         builder.addAction(
             0,
-            "End",
+            "Finish",
             buildActionPendingIntent(context, TimerNotificationActionReceiver.ACTION_END, 3004)
         )
 
@@ -338,33 +441,56 @@ object BrainBufferNotificationManager {
         masterNotificationsEnabled: Boolean,
         hourOfDay: Int = LocalTime.now().hour,
         soundEnabled: Boolean = true,
-        vibrationEnabled: Boolean = true
+        vibrationEnabled: Boolean = true,
+        isExplicitlyBlocked: Boolean = false,
+        categoryLabel: String = "",
+        blockReason: String = ""
     ): Boolean {
         if (!masterNotificationsEnabled) return false
-        if (!prefs.distractionWarningsEnabled) return false
-        if (isWithinQuietHours(prefs, hourOfDay)) return false
+        if (!prefs.distractionWarningsEnabled && !isExplicitlyBlocked) return false
+        if (!isExplicitlyBlocked && isWithinQuietHours(prefs, hourOfDay)) return false
 
         ensureChannels(context)
 
-        val safeSubject = subjectName.ifBlank { "your study session" }
+        val safeSubject = subjectName.ifBlank { "your focus session" }
         val safeApp = detectedAppLabel.ifBlank { "another app" }
 
-        val title = "BRAIN BUFFER — Study Reminder"
-        val body = when (snapshot.activeActivityType) {
-            StudyActivityType.STUDY_LECTURE ->
-                "You planned to watch a $safeSubject lecture. You appear to have switched to $safeApp. Return to your lecture?"
-            StudyActivityType.STUDY_PDF ->
-                "You planned to study PDFs for $safeSubject. You appear to have switched to $safeApp. Return to your study session?"
-            StudyActivityType.READING, StudyActivityType.WRITING_NOTES ->
-                "You planned ${snapshot.activeActivityLabel.lowercase()} for $safeSubject. You appear to have switched to $safeApp. Return to study?"
-            else ->
-                "You planned to study $safeSubject. You appear to have switched to $safeApp. Would you like to return to your study session?"
+        val title = if (isExplicitlyBlocked) {
+            "Focus Guard · $safeApp is shielded"
+        } else {
+            "BRAIN BUFFER — Focus Reminder"
+        }
+        val body = if (isExplicitlyBlocked) {
+            blockReason.ifBlank {
+                "$safeApp is on your Focus Guard blocklist during $safeSubject. Tap to return to focus or request timed Need Phone access."
+            }
+        } else {
+            when (snapshot.activeActivityType) {
+                StudyActivityType.STUDY_LECTURE ->
+                    "You planned to watch a $safeSubject lecture. You appear to have switched to $safeApp. Return to your lecture?"
+                StudyActivityType.STUDY_PDF ->
+                    "You planned to study PDFs for $safeSubject. You appear to have switched to $safeApp. Return to your study session?"
+                StudyActivityType.READING, StudyActivityType.WRITING_NOTES ->
+                    "You planned ${snapshot.activeActivityLabel.lowercase()} for $safeSubject. You appear to have switched to $safeApp. Return to focus?"
+                else ->
+                    "You planned to focus on $safeSubject. You appear to have switched to $safeApp. Would you like to return to your focus session?"
+            }
         }
 
         val openRoute = if (snapshot.isStrictFocus) "strict_focus" else "focus"
-        val openIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(EXTRA_OPEN_ROUTE, openRoute)
+        val openIntent = if (isExplicitlyBlocked) {
+            com.example.ui.FocusBlockedActivity.createIntent(
+                context = context,
+                appName = safeApp,
+                packageName = detectedPackageName,
+                categoryLabel = categoryLabel.ifBlank { "Distracting app" },
+                reason = body
+            )
+        } else {
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(EXTRA_OPEN_ROUTE, openRoute)
+            }
         }
         val contentPendingIntent = PendingIntent.getActivity(
             context,
@@ -376,7 +502,7 @@ object BrainBufferNotificationManager {
         val publicVersion = NotificationCompat.Builder(context, CHANNEL_DISTRACTION_WARNINGS)
             .setSmallIcon(R.drawable.ic_stat_brain_buffer)
             .setContentTitle(title)
-            .setContentText("Would you like to return to your study session?")
+            .setContentText("Focus Guard is protecting your active session.")
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
 
@@ -400,7 +526,7 @@ object BrainBufferNotificationManager {
         if (!soundEnabled && !vibrationEnabled) {
             builder.setSilent(true)
         } else if (vibrationEnabled) {
-            builder.setVibrate(longArrayOf(0L, 140L, 80L, 140L))
+            builder.setVibrate(BrainBufferHaptics.waveformFor(HapticEvent.DISTRACTION_ALERT).timingsMs)
         }
 
         // Action 1: Return to Study
@@ -565,7 +691,7 @@ object BrainBufferNotificationManager {
         if (!soundEnabled && !vibrationEnabled) {
             builder.setSilent(true)
         } else if (vibrationEnabled) {
-            builder.setVibrate(longArrayOf(0L, 180L, 90L, 180L))
+            builder.setVibrate(BrainBufferHaptics.waveformFor(HapticEvent.SESSION_COMPLETE).timingsMs)
         }
 
         if (snapshot.pausedParentSession != null) {
@@ -639,6 +765,92 @@ object BrainBufferNotificationManager {
         }
     }
 
+    fun postTemporaryAccessExpiredNotification(
+        context: Context,
+        tempAccessId: String,
+        appLabel: String,
+        canExtend: Boolean,
+        masterNotificationsEnabled: Boolean,
+        soundEnabled: Boolean = true,
+        vibrationEnabled: Boolean = true
+    ): Boolean {
+        if (!masterNotificationsEnabled) return false
+        val dedupKey = "temp_exp_${tempAccessId}_ext_${!canExtend}"
+        if (!postedCompletionSessionKeys.add(dedupKey)) {
+            return false
+        }
+        ensureChannels(context)
+
+        val safeApp = appLabel.ifBlank { "the temporary app" }
+        val title = "Time is up. Return to your focus session?"
+        val body = if (canExtend) {
+            "Your temporary access to $safeApp has ended. Switch back to focus or request up to 5 more minutes (one-time)."
+        } else {
+            "Your temporary access and 5-minute extension for $safeApp have ended. Ready to switch back to focus?"
+        }
+
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_ROUTE, "focus")
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            2007,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ACTIVITY_REMINDERS)
+            .setSmallIcon(R.drawable.ic_stat_brain_buffer)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(contentPendingIntent)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setColor(0xFF7B5CFA.toInt())
+
+        if (!soundEnabled && !vibrationEnabled) {
+            builder.setSilent(true)
+        } else if (vibrationEnabled) {
+            builder.setVibrate(BrainBufferHaptics.waveformFor(HapticEvent.DISTRACTION_ALERT).timingsMs)
+        }
+
+        builder.addAction(
+            0,
+            "Switch to Focus",
+            buildActionPendingIntent(
+                context = context,
+                action = TimerNotificationActionReceiver.ACTION_RETURN_TO_FOCUS_TEMP,
+                requestCode = 3301
+            )
+        )
+        if (canExtend) {
+            builder.addAction(
+                0,
+                "Need more time (+5m)",
+                buildActionPendingIntent(
+                    context = context,
+                    action = TimerNotificationActionReceiver.ACTION_EXTEND_TEMP_5M,
+                    requestCode = 3302,
+                    extraMinutes = 5
+                )
+            )
+        }
+
+        return notifySafely(context, ID_TEMP_ACCESS_EXPIRED, builder.build())
+    }
+
+    fun cancelTemporaryAccessExpiredNotification(context: Context) {
+        try {
+            NotificationManagerCompat.from(context).cancel(ID_TEMP_ACCESS_EXPIRED)
+        } catch (_: SecurityException) {
+            // Safe no-op
+        }
+    }
+
     fun cancelDistractionWarningNotification(context: Context) {
         try {
             NotificationManagerCompat.from(context).cancel(ID_DISTRACTION_WARNING)
@@ -651,7 +863,7 @@ object BrainBufferNotificationManager {
         postedCompletionSessionKeys.clear()
     }
 
-    private fun notifySafely(context: Context, id: Int, notification: Notification): Boolean {
+    internal fun notifySafely(context: Context, id: Int, notification: Notification): Boolean {
         if (!hasNotificationPermission(context)) return false
         return try {
             NotificationManagerCompat.from(context).notify(id, notification)

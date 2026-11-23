@@ -17,9 +17,15 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ActivityLogEntity::class,
         StrictFocusPresetEntity::class,
         CustomActivityEntity::class,
-        AppCategoryMappingEntity::class
+        AppCategoryMappingEntity::class,
+        StudySessionEntity::class,
+        BlockedAppEntity::class,
+        StudyResourceEntity::class,
+        SyncOutboxEntity::class,
+        PurposeSessionEntity::class,
+        InterventionEventEntity::class
     ],
-    version = 3,
+    version = 6,
     exportSchema = false
 )
 abstract class BrainBufferDatabase : RoomDatabase() {
@@ -32,6 +38,12 @@ abstract class BrainBufferDatabase : RoomDatabase() {
     abstract fun strictFocusPresetDao(): StrictFocusPresetDao
     abstract fun customActivityDao(): CustomActivityDao
     abstract fun appCategoryMappingDao(): AppCategoryMappingDao
+    abstract fun studySessionDao(): StudySessionDao
+    abstract fun blockedAppDao(): BlockedAppDao
+    abstract fun studyResourceDao(): StudyResourceDao
+    abstract fun syncOutboxDao(): SyncOutboxDao
+    abstract fun purposeSessionDao(): PurposeSessionDao
+    abstract fun interventionEventDao(): InterventionEventDao
 
     companion object {
         @Volatile
@@ -120,6 +132,145 @@ abstract class BrainBufferDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Safe non-destructive migration from schema v3 -> v4.
+         * Preserves all existing study data and adds durable study_sessions lifecycle table.
+         */
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        sessionKey TEXT NOT NULL,
+                        subjectId INTEGER,
+                        subjectName TEXT NOT NULL,
+                        startTimeMs INTEGER NOT NULL,
+                        endTimeMs INTEGER,
+                        totalDurationSeconds INTEGER NOT NULL,
+                        plannedDurationSeconds INTEGER NOT NULL,
+                        sessionStatus TEXT NOT NULL,
+                        focusGuardLevel TEXT NOT NULL,
+                        activityType TEXT NOT NULL,
+                        updatedAtMs INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_study_sessions_sessionKey ON study_sessions (sessionKey)"
+                )
+            }
+        }
+
+        /**
+         * Safe non-destructive migration from schema v4 -> v5.
+         * Preserves all existing tables (including garden_plants) and adds Focus Guard blocklists,
+         * Study-Only YouTube resources, and offline-first Supabase sync outbox.
+         */
+        val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS blocked_apps (
+                        packageName TEXT NOT NULL PRIMARY KEY,
+                        appLabel TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        blockInNormal INTEGER NOT NULL,
+                        blockInHigh INTEGER NOT NULL,
+                        blockInCustom INTEGER NOT NULL,
+                        isBlocked INTEGER NOT NULL,
+                        updatedAtMs INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_resources (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        subjectId INTEGER,
+                        title TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        resourceType TEXT NOT NULL,
+                        channelName TEXT NOT NULL,
+                        lastOpenedAtMs INTEGER NOT NULL,
+                        createdAtMs INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS sync_outbox (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        entityType TEXT NOT NULL,
+                        localKey TEXT NOT NULL,
+                        operation TEXT NOT NULL,
+                        payloadJson TEXT NOT NULL,
+                        createdAtMs INTEGER NOT NULL,
+                        retryCount INTEGER NOT NULL,
+                        lastError TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_sync_outbox_entityType_localKey ON sync_outbox (entityType, localKey)"
+                )
+            }
+        }
+
+        /**
+         * Safe non-destructive migration from schema v5 -> v6.
+         * Preserves all 13 existing tables and adds purpose-aware session & intervention analytics tables.
+         */
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS purpose_sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        sessionKey TEXT NOT NULL,
+                        purposeCategory TEXT NOT NULL,
+                        sessionName TEXT NOT NULL,
+                        allowedPackagesCsv TEXT NOT NULL,
+                        allowedAppLabelsCsv TEXT NOT NULL,
+                        plannedSeconds INTEGER NOT NULL,
+                        actualFocusedSeconds INTEGER NOT NULL,
+                        breakSeconds INTEGER NOT NULL,
+                        temporaryAccessSeconds INTEGER NOT NULL,
+                        distractionSeconds INTEGER NOT NULL,
+                        interventionCount INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        breakPlanMode TEXT NOT NULL,
+                        linkedTaskId INTEGER,
+                        startedAtMs INTEGER NOT NULL,
+                        endedAtMs INTEGER NOT NULL,
+                        dateEpochDay INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_purpose_sessions_sessionKey ON purpose_sessions (sessionKey)"
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS intervention_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        sessionKey TEXT NOT NULL,
+                        eventType TEXT NOT NULL,
+                        packageName TEXT NOT NULL,
+                        appLabel TEXT NOT NULL,
+                        declaredPurpose TEXT NOT NULL,
+                        actionTaken TEXT NOT NULL,
+                        plannedSeconds INTEGER NOT NULL,
+                        extensionSeconds INTEGER NOT NULL,
+                        actualSeconds INTEGER NOT NULL,
+                        timestampMs INTEGER NOT NULL,
+                        dateEpochDay INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): BrainBufferDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -127,7 +278,13 @@ abstract class BrainBufferDatabase : RoomDatabase() {
                     BrainBufferDatabase::class.java,
                     "brain_buffer.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(
+                        MIGRATION_1_2,
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6
+                    )
                     .build()
                     .also { INSTANCE = it }
             }

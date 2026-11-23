@@ -23,12 +23,12 @@ enum class AmbientSoundscape(
     val subtitle: String,
     val accentHex: Long
 ) {
-    OFF("Off", "Silent sanctuary", 0xFF8E8E98),
-    SOFT_RAIN("Soft Rain", "Gentle steady rainfall", 0xFF60A5FA),
-    BROWN_NOISE("Brown Noise", "Warm deep concentration rumble", 0xFFA78BFA),
-    PINK_FOCUS("Pink Study", "Balanced acoustic masking", 0xFF34D399),
-    NIGHT_BREEZE("Night Breeze", "Slow organic woodland wind", 0xFF2DD4BF),
-    DEEP_DRONE("Calm Drone", "Soft harmonic study hum", 0xFFF472B6)
+    OFF("Off", "Silent focus", 0xFF8E8E98),
+    SOFT_RAIN("Rain", "Gentle steady rainfall", 0xFF60A5FA),
+    BROWN_NOISE("Brown noise", "Warm deep concentration rumble", 0xFFA78BFA),
+    PINK_FOCUS("Pink noise", "Balanced acoustic masking", 0xFF34D399),
+    NIGHT_BREEZE("Gentle ambience", "Soft organic woodland breeze", 0xFF2DD4BF),
+    DEEP_DRONE("Calm hum", "Soft harmonic drone", 0xFFF472B6)
 }
 
 @Immutable

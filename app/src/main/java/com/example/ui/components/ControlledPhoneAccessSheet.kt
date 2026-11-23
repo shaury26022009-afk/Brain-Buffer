@@ -71,26 +71,33 @@ import com.example.model.ActivityCategory
 import com.example.model.AppCategoryMapping
 import com.example.model.ControlledAccessOption
 import com.example.model.StudyActivityType
+import com.example.model.StudyResource
 import com.example.system.AppLauncherHelper
 import com.example.system.InstalledAppChoice
 import com.example.ui.theme.BrainBufferThemeTokens
 import com.example.ui.theme.JetBrainsMonoFamily
 
 /**
- * Controlled Phone Access ("What do you need your phone for?"):
- * Fast, calm, large-touch-target allowance selector allowing students to pick a reason,
- * choose a duration (presets or custom), optionally pick a PDF via SAF or an installed app
- * (Play-compliant `<queries>`), and seamlessly pause & preserve the active study session.
+ * Redesigned "Need Phone" Controlled Phone Access sheet with 6 clear Liquid Glass choices:
+ * 1. Watch Study Lectures (Study-Only YouTube links/playlists/channels)
+ * 2. SMS and Emails (never reads or uploads message contents)
+ * 3. Files and Documents (Android SAF document picker)
+ * 4. Calls (dialer & emergency-safe)
+ * 5. PDFs and Drive (Android SAF PDF picker + Drive/PDF apps)
+ * 6. Custom (choose app or activity + duration; tracked separately)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ControlledPhoneAccessSheet(
     allowances: ActivityAllowanceConfig,
     appCategoryMappings: List<AppCategoryMapping>,
+    studyResources: List<StudyResource> = emptyList(),
     todayEntertainmentMinutes: Int,
     hasActiveStudySession: Boolean,
     hapticsEnabled: Boolean,
     onDismiss: () -> Unit,
+    onOpenStudyYouTube: () -> Unit = {},
+    onMarkStudyResourceOpened: (Long) -> Unit = {},
     onApproveActivity: (
         activityType: StudyActivityType,
         activityLabel: String,
@@ -111,10 +118,13 @@ fun ControlledPhoneAccessSheet(
         ControlledPhoneAccessContent(
             allowances = allowances,
             appCategoryMappings = appCategoryMappings,
+            studyResources = studyResources,
             todayEntertainmentMinutes = todayEntertainmentMinutes,
             hasActiveStudySession = hasActiveStudySession,
             hapticsEnabled = hapticsEnabled,
             onDismiss = onDismiss,
+            onOpenStudyYouTube = onOpenStudyYouTube,
+            onMarkStudyResourceOpened = onMarkStudyResourceOpened,
             onApproveActivity = onApproveActivity
         )
     }
@@ -125,10 +135,13 @@ fun ControlledPhoneAccessSheet(
 fun ControlledPhoneAccessContent(
     allowances: ActivityAllowanceConfig,
     appCategoryMappings: List<AppCategoryMapping>,
+    studyResources: List<StudyResource> = emptyList(),
     todayEntertainmentMinutes: Int,
     hasActiveStudySession: Boolean,
     hapticsEnabled: Boolean,
     onDismiss: () -> Unit,
+    onOpenStudyYouTube: () -> Unit = {},
+    onMarkStudyResourceOpened: (Long) -> Unit = {},
     onApproveActivity: (
         activityType: StudyActivityType,
         activityLabel: String,
@@ -147,6 +160,7 @@ fun ControlledPhoneAccessContent(
     var customMinutesText by remember { mutableStateOf("") }
     var customReasonLabel by remember { mutableStateOf("") }
     var selectedApp by remember { mutableStateOf<InstalledAppChoice?>(null) }
+    var selectedStudyResource by remember { mutableStateOf<StudyResource?>(null) }
     var showAllApps by remember { mutableStateOf(false) }
     var pickedPdfUri by remember { mutableStateOf<Uri?>(null) }
     var pickedPdfName by remember { mutableStateOf("") }
@@ -253,6 +267,7 @@ fun ControlledPhoneAccessContent(
                             durationMinutes = defaultMins
                             customMinutesText = ""
                             selectedApp = null
+                            selectedStudyResource = null
                             showAllApps = false
                             pickedPdfUri = null
                             pickedPdfName = ""
@@ -364,19 +379,86 @@ fun ControlledPhoneAccessContent(
                 }
             }
 
-            // Custom reason input for "Other"
-            if (option == ControlledAccessOption.OTHER) {
+            // Custom reason input for "Custom"
+            if (option == ControlledAccessOption.CUSTOM) {
                 OutlinedTextField(
                     value = customReasonLabel,
                     onValueChange = { customReasonLabel = it.take(40) },
                     label = { Text("What do you need to do? (optional)") },
-                    placeholder = { Text("e.g., Check exam timetable, Call parents") },
+                    placeholder = { Text("e.g., Check exam timetable, Banking, Notes") },
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("controlled_access_other_input")
                 )
+            }
+
+            // Study-Only YouTube approved library selector for Watch Study Lectures
+            if (option.supportsStudyYouTube) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = accent.copy(alpha = 0.08f),
+                    border = BorderStroke(1.dp, accent.copy(alpha = 0.28f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Study-Only YouTube Links",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Open an approved lecture, playlist, or channel directly",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(onClick = onOpenStudyYouTube) {
+                                Text("Manage")
+                            }
+                        }
+
+                        if (studyResources.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                studyResources.take(6).forEach { res ->
+                                    val chosen = selectedStudyResource?.id == res.id
+                                    FilterChip(
+                                        selected = chosen,
+                                        onClick = {
+                                            selectedStudyResource = if (chosen) null else res
+                                        },
+                                        label = {
+                                            Text(
+                                                text = res.title,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = "Tap 'Manage' to save your approved YouTube lectures & playlists.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
 
             // Duration selector: fast presets + custom minutes
@@ -423,8 +505,9 @@ fun ControlledPhoneAccessContent(
                 )
             }
 
-            // SAF PDF Picker for Study PDF / Documents (zero broad storage permissions)
-            if (option.supportsPdfPicker) {
+            // SAF PDF or Generic File/Document Picker (zero broad storage permissions)
+            if (option.supportsPdfPicker || option.supportsFilePicker) {
+                val isPdfOnly = option.supportsPdfPicker
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = accent.copy(alpha = 0.08f),
@@ -444,7 +527,9 @@ fun ControlledPhoneAccessContent(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (pickedPdfName.isNotBlank()) pickedPdfName else "Choose a Study PDF (optional)",
+                                text = if (pickedPdfName.isNotBlank()) pickedPdfName
+                                else if (isPdfOnly) "Choose a Study PDF (optional)"
+                                else "Choose a File or Document (optional)",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
@@ -457,14 +542,20 @@ fun ControlledPhoneAccessContent(
                             )
                         }
                         OutlinedButton(
-                            onClick = { pdfPickerLauncher.launch(arrayOf("application/pdf")) },
+                            onClick = {
+                                if (isPdfOnly) {
+                                    pdfPickerLauncher.launch(arrayOf("application/pdf"))
+                                } else {
+                                    pdfPickerLauncher.launch(arrayOf("*/*"))
+                                }
+                            },
                             shape = RoundedCornerShape(12.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                             modifier = Modifier.testTag("controlled_access_pick_pdf_button")
                         ) {
                             Icon(Icons.Rounded.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (pickedPdfUri == null) "Pick PDF" else "Change")
+                            Text(if (pickedPdfUri == null) (if (isPdfOnly) "Pick PDF" else "Pick File") else "Change")
                         }
                     }
                 }
@@ -575,8 +666,9 @@ fun ControlledPhoneAccessContent(
 
             val finalMinutes = durationMinutes.coerceIn(1, 180)
             val resolvedLabel = when {
-                option == ControlledAccessOption.OTHER && customReasonLabel.isNotBlank() -> customReasonLabel.trim()
-                pickedPdfName.isNotBlank() -> "PDF · $pickedPdfName"
+                selectedStudyResource != null -> "Lecture · ${selectedStudyResource!!.title}"
+                option == ControlledAccessOption.CUSTOM && customReasonLabel.isNotBlank() -> customReasonLabel.trim()
+                pickedPdfName.isNotBlank() -> "${option.shortTitle} · $pickedPdfName"
                 selectedApp != null -> "${option.shortTitle} · ${selectedApp!!.label}"
                 else -> option.title
             }
@@ -595,10 +687,20 @@ fun ControlledPhoneAccessContent(
                         selectedApp?.label.orEmpty(),
                         pickedPdfUri?.toString().orEmpty()
                     )
-                    // Launch chosen PDF or installed app right after starting the tracked allowance
+                    // Launch chosen study link, dialer, PDF/document, or installed app
                     when {
-                        pickedPdfUri != null -> {
+                        selectedStudyResource != null -> {
+                            onMarkStudyResourceOpened(selectedStudyResource!!.id)
+                            AppLauncherHelper.openStudyUrl(context, selectedStudyResource!!.url)
+                        }
+                        option.supportsDialer -> {
+                            AppLauncherHelper.openDialer(context)
+                        }
+                        pickedPdfUri != null && option.supportsPdfPicker -> {
                             AppLauncherHelper.openPdfDocument(context, pickedPdfUri!!, selectedApp?.packageName)
+                        }
+                        pickedPdfUri != null -> {
+                            AppLauncherHelper.openDocument(context, pickedPdfUri!!, selectedApp?.packageName)
                         }
                         selectedApp != null -> {
                             AppLauncherHelper.launchApp(context, selectedApp!!.packageName)
@@ -612,14 +714,18 @@ fun ControlledPhoneAccessContent(
                     .testTag("controlled_access_confirm_button")
             ) {
                 Icon(
-                    imageVector = if (pickedPdfUri != null || selectedApp != null) Icons.Rounded.Launch else Icons.Rounded.Timer,
+                    imageVector = if (selectedStudyResource != null || option.supportsDialer || pickedPdfUri != null || selectedApp != null) {
+                        Icons.Rounded.Launch
+                    } else Icons.Rounded.Timer,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = when {
-                        pickedPdfUri != null -> "Open PDF & Track ${finalMinutes}m"
+                        selectedStudyResource != null -> "Open Study Link · ${finalMinutes}m"
+                        option.supportsDialer -> "Open Dialer · ${finalMinutes}m"
+                        pickedPdfUri != null -> "Open File & Track ${finalMinutes}m"
                         selectedApp != null -> "Open ${selectedApp!!.label} · ${finalMinutes}m"
                         else -> "Start ${option.shortTitle} · ${finalMinutes}m"
                     },

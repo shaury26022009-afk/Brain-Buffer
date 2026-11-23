@@ -216,13 +216,8 @@ class AdaptiveBlurControllerTest {
                     ProfileScreen(
                         uiState = BrainBufferUiState(),
                         onUpdateTheme = {},
-                        onUpdateProfile = { _, _, _, _, _, _, _, _, _, _ -> },
-                        onSaveSubject = {},
-                        onDeleteSubject = {},
                         onUpdateTimerAndTarget = { _, _, _, _ -> },
                         onUpdateAppSettings = { _, _, _, _, _ -> },
-                        onOpenMindReset = {},
-                        onLoadDemoData = {},
                         onClearAllData = {},
                         onResetOnboarding = {}
                     )
@@ -230,8 +225,7 @@ class AdaptiveBlurControllerTest {
             }
         }
 
-        composeRule.onNodeWithTag("profile_tab_settings").performClick()
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag("settings_adaptive_blur_status").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("profile_list").assertIsDisplayed()
+        composeRule.onNodeWithTag("settings_theme_selector").assertIsDisplayed()
     }
 }

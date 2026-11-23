@@ -10,13 +10,23 @@ enum class ThemeMode(val label: String) {
     SYSTEM("Follow System")
 }
 
+enum class UserProfileRole(
+    val label: String,
+    val subtitle: String,
+    val defaultDisplayName: String
+) {
+    STUDENT("Student", "School, college, university or exam prep", "Student"),
+    PROFESSIONAL("Professional", "Deep work, engineering, writing or projects", "Friend"),
+    PERSONAL("Personal", "Healthier phone habits & mindful screen time", "Friend")
+}
+
 enum class StudyLevel(val label: String, val placeholder: String) {
     SCHOOL("School", "e.g., Grade 11 · Science Stream"),
     COLLEGE("College", "e.g., B.S. Computer Science"),
     UNIVERSITY("University", "e.g., M.Sc. Cognitive Science"),
     COMPETITIVE("Competitive Exams", "e.g., JEE / NEET / MCAT / GRE"),
     SELF_LEARNING("Self-learning", "e.g., Android & Kotlin Engineering"),
-    OTHER("Other", "e.g., Architecture Certification")
+    OTHER("Other", "e.g., Software Engineering / Design")
 }
 
 enum class PreferredStudyTime(val label: String, val windowHint: String) {
@@ -315,7 +325,7 @@ enum class FocusSessionState(val label: String) {
 }
 
 /**
- * The 8 clear, fast options presented on "What do you need your phone for?" (Parts 3 & 5).
+ * The 6 clear, fast choices presented on "Need Phone" during Focus Guard sessions.
  */
 enum class ControlledAccessOption(
     val title: String,
@@ -324,69 +334,59 @@ enum class ControlledAccessOption(
     val activityType: StudyActivityType,
     val defaultPresets: List<Int>,
     val supportsAppPicker: Boolean,
-    val supportsPdfPicker: Boolean = false
+    val supportsPdfPicker: Boolean = false,
+    val supportsFilePicker: Boolean = false,
+    val supportsStudyYouTube: Boolean = false,
+    val supportsDialer: Boolean = false
 ) {
     STUDY_LECTURE(
-        title = "Watch a study lecture",
-        shortTitle = "Lecture",
-        subtitle = "YouTube, Coursera or recorded class",
+        title = "Watch Study Lectures",
+        shortTitle = "Lectures",
+        subtitle = "Approved study YouTube links, playlists & channels",
         activityType = StudyActivityType.STUDY_LECTURE,
-        defaultPresets = listOf(10, 15, 20, 30, 45),
+        defaultPresets = listOf(10, 15, 25, 30, 45),
+        supportsAppPicker = true,
+        supportsStudyYouTube = true
+    ),
+    SMS_AND_EMAILS(
+        title = "SMS and Emails",
+        shortTitle = "Messages",
+        subtitle = "Check urgent texts or emails briefly (never read by Brain Buffer)",
+        activityType = StudyActivityType.OTHER,
+        defaultPresets = listOf(3, 5, 10, 15),
         supportsAppPicker = true
     ),
-    STUDY_PDF(
-        title = "Study PDF / Documents",
-        shortTitle = "PDF / Docs",
-        subtitle = "Open notes, slides or a textbook PDF",
+    FILES_AND_DOCUMENTS(
+        title = "Files and Documents",
+        shortTitle = "Files",
+        subtitle = "Open notes, slides or local documents via Android picker",
+        activityType = StudyActivityType.READING,
+        defaultPresets = listOf(10, 15, 25, 30, 45),
+        supportsAppPicker = true,
+        supportsFilePicker = true
+    ),
+    CALLS(
+        title = "Calls",
+        shortTitle = "Calls",
+        subtitle = "Emergency & important calls always remain accessible",
+        activityType = StudyActivityType.OTHER,
+        defaultPresets = listOf(5, 10, 15, 20),
+        supportsAppPicker = false,
+        supportsDialer = true
+    ),
+    PDFS_AND_DRIVE(
+        title = "PDFs and Drive",
+        shortTitle = "PDFs / Drive",
+        subtitle = "Open textbooks, PDFs or Google Drive study folders",
         activityType = StudyActivityType.STUDY_PDF,
-        defaultPresets = listOf(10, 15, 20, 30, 45),
+        defaultPresets = listOf(10, 15, 25, 30, 45),
         supportsAppPicker = true,
         supportsPdfPicker = true
     ),
-    READING_RESEARCH(
-        title = "Reading / Research",
-        shortTitle = "Research",
-        subtitle = "Articles, docs or reference lookup",
-        activityType = StudyActivityType.READING,
-        defaultPresets = listOf(10, 15, 20, 30),
-        supportsAppPicker = true
-    ),
-    NOTES_WRITING(
-        title = "Notes / Writing",
-        shortTitle = "Notes",
-        subtitle = "Notion, Google Docs, Keep or Obsidian",
-        activityType = StudyActivityType.WRITING_NOTES,
-        defaultPresets = listOf(10, 15, 20, 30, 45),
-        supportsAppPicker = true
-    ),
-    TAKE_BREAK(
-        title = "Take a short break",
-        shortTitle = "Break",
-        subtitle = "Rest your eyes, stretch or hydrate",
-        activityType = StudyActivityType.SHORT_BREAK,
-        defaultPresets = listOf(5, 10, 15, 20),
-        supportsAppPicker = false
-    ),
-    GAMES(
-        title = "Gaming",
-        shortTitle = "Games",
-        subtitle = "Timed entertainment allowance",
-        activityType = StudyActivityType.PLAYING_GAME,
-        defaultPresets = listOf(5, 10, 15, 20, 30),
-        supportsAppPicker = true
-    ),
-    SOCIAL_ENTERTAINMENT(
-        title = "Social media / Entertainment",
-        shortTitle = "Social",
-        subtitle = "Short intentional allowance",
-        activityType = StudyActivityType.ENTERTAINMENT,
-        defaultPresets = listOf(5, 10, 15, 20, 30),
-        supportsAppPicker = true
-    ),
-    OTHER(
-        title = "Other",
-        shortTitle = "Other",
-        subtitle = "Describe briefly & set a timer",
+    CUSTOM(
+        title = "Custom",
+        shortTitle = "Custom",
+        subtitle = "Choose any app or activity & duration (tracked separately)",
         activityType = StudyActivityType.OTHER,
         defaultPresets = listOf(5, 10, 15, 20, 30),
         supportsAppPicker = true
@@ -394,7 +394,7 @@ enum class ControlledAccessOption(
 }
 
 /**
- * Editable default allowances & separate daily entertainment budget (Parts 5 & 8).
+ * Editable default allowances & separate daily entertainment budget.
  */
 data class ActivityAllowanceConfig(
     val pdfDefaultMinutes: Int = 25,
@@ -407,14 +407,12 @@ data class ActivityAllowanceConfig(
     val dailyEntertainmentLimitMinutes: Int = 45
 ) {
     fun defaultMinutesFor(option: ControlledAccessOption): Int = when (option) {
-        ControlledAccessOption.STUDY_PDF -> pdfDefaultMinutes
         ControlledAccessOption.STUDY_LECTURE -> lectureDefaultMinutes
-        ControlledAccessOption.READING_RESEARCH -> readingDefaultMinutes
-        ControlledAccessOption.NOTES_WRITING -> notesDefaultMinutes
-        ControlledAccessOption.TAKE_BREAK -> breakDefaultMinutes
-        ControlledAccessOption.GAMES -> gamingDefaultMinutes
-        ControlledAccessOption.SOCIAL_ENTERTAINMENT -> socialDefaultMinutes
-        ControlledAccessOption.OTHER -> 15
+        ControlledAccessOption.SMS_AND_EMAILS -> 5
+        ControlledAccessOption.FILES_AND_DOCUMENTS -> readingDefaultMinutes
+        ControlledAccessOption.CALLS -> 10
+        ControlledAccessOption.PDFS_AND_DRIVE -> pdfDefaultMinutes
+        ControlledAccessOption.CUSTOM -> 15
     }
 }
 
@@ -441,7 +439,18 @@ data class FocusGuardSettings(
     val liveUpdatesEnabled: Boolean = true,
     val allowedStudyAppsCsv: String = "PDF Reader, Notes, Calculator, YouTube",
     val optionalEntertainmentAppsCsv: String = "Instagram, TikTok, Games",
-    val allowances: ActivityAllowanceConfig = ActivityAllowanceConfig()
+    val allowances: ActivityAllowanceConfig = ActivityAllowanceConfig(),
+    val scheduledBlockingEnabled: Boolean = false,
+    val scheduleStartHour: Int = 9,
+    val scheduleEndHour: Int = 12,
+    val scheduleDaysCsv: String = "MON,TUE,WED,THU,FRI",
+    val blockDuringActiveFocus: Boolean = true,
+    val allowTemporaryBreaks: Boolean = true,
+    val essentialAppsCsv: String = "Phone, Messages, Clock, Settings",
+    val gracePeriodSeconds: Int = 15,
+    val unlockInterventionEnabled: Boolean = false,
+    val defaultPurposeCategory: SessionPurposeCategory = SessionPurposeCategory.STUDY,
+    val defaultBreakPlanMode: BreakPlanMode = BreakPlanMode.NONE
 )
 
 /**
@@ -583,7 +592,10 @@ data class NotificationPreferences(
     val hidePrivateNotesOnLockScreen: Boolean = true,
     val quietHoursEnabled: Boolean = false,
     val quietStartHour: Int = 22,
-    val quietEndHour: Int = 7
+    val quietEndHour: Int = 7,
+    val allowImportantCallsDuringFocus: Boolean = true,
+    val allowAlarmsDuringFocus: Boolean = true,
+    val muteDistractingAppsDuringFocus: Boolean = true
 )
 
 data class PausedParentSession(
@@ -597,7 +609,20 @@ data class PausedParentSession(
     val accumulatedFocusedMs: Long,
     val isStrictFocus: Boolean,
     val strictFocusAodStyle: Boolean,
-    val focusGuardLevel: FocusGuardLevel = if (isStrictFocus) FocusGuardLevel.HIGH else FocusGuardLevel.NORMAL
+    val focusGuardLevel: FocusGuardLevel = if (isStrictFocus) FocusGuardLevel.HIGH else FocusGuardLevel.NORMAL,
+    val purposeCategory: SessionPurposeCategory = SessionPurposeCategory.STUDY,
+    val allowedPackages: Set<String> = emptySet(),
+    val allowedAppLabels: List<String> = emptyList(),
+    val breakPlanMode: BreakPlanMode = BreakPlanMode.NONE,
+    val breakDurationMinutes: Int = 5,
+    val breakIntervalMinutes: Int = 25,
+    val breaksTakenCount: Int = 0,
+    val accumulatedBreakSeconds: Int = 0,
+    val accumulatedTempAccessSeconds: Int = 0,
+    val accumulatedDistractionSeconds: Int = 0,
+    val interventionCount: Int = 0,
+    val linkedTaskId: Long? = null,
+    val sessionStartedAtEpochMs: Long? = null
 )
 
 data class AppUsageSuggestion(
@@ -610,6 +635,8 @@ data class AppUsageSuggestion(
 data class UserPreferences(
     val isLoaded: Boolean = false,
     val onboardingCompleted: Boolean = false,
+    val onboardingCurrentStep: Int = 0,
+    val userRole: UserProfileRole = UserProfileRole.STUDENT,
     val studentName: String = "",
     val avatarKey: String = StudentAvatar.SPARK.key,
     val studyLevel: StudyLevel = StudyLevel.UNIVERSITY,
@@ -641,9 +668,12 @@ data class UserPreferences(
     val savedDndInterruptionFilter: Int = -1,
     val focusGuardSettings: FocusGuardSettings = FocusGuardSettings(),
     val distractionWarningsToday: Int = 0,
-    val distractionWarningsWeek: Int = 0
+    val distractionWarningsWeek: Int = 0,
+    val cloudUsageSummarySyncEnabled: Boolean = false,
+    val familyControlSettings: FamilyControlSettings = FamilyControlSettings(),
+    val activeAccountOwnerId: String = ""
 ) {
-    val displayName: String get() = studentName.trim().ifBlank { "Student" }
+    val displayName: String get() = studentName.trim().ifBlank { userRole.defaultDisplayName }
     val avatar: StudentAvatar get() = StudentAvatar.entries.firstOrNull { it.key == avatarKey } ?: StudentAvatar.SPARK
 }
 
@@ -670,22 +700,42 @@ data class PersistedTimerSnapshot(
     val focusGuardLevel: FocusGuardLevel = FocusGuardLevel.NORMAL,
     val approvedPackageName: String = "",
     val approvedAppLabel: String = "",
-    val approvedDocumentUri: String = ""
+    val approvedDocumentUri: String = "",
+    val linkedTaskId: Long? = null,
+    val lastCompletedSessionId: String = "",
+    val purposeCategory: SessionPurposeCategory = SessionPurposeCategory.STUDY,
+    val allowedPackages: Set<String> = emptySet(),
+    val allowedAppLabels: List<String> = emptyList(),
+    val breakPlanMode: BreakPlanMode = BreakPlanMode.NONE,
+    val breakDurationMinutes: Int = 5,
+    val breakIntervalMinutes: Int = 25,
+    val breaksTakenCount: Int = 0,
+    val accumulatedBreakSeconds: Int = 0,
+    val accumulatedTempAccessSeconds: Int = 0,
+    val accumulatedDistractionSeconds: Int = 0,
+    val interventionCount: Int = 0,
+    val sessionStartedAtEpochMs: Long? = null
 ) {
     val isSwitchedActivity: Boolean get() = pausedParentSession != null
+    val isOnBreak: Boolean get() = activeActivityCategory == ActivityCategory.BREAK && hasStarted
 }
 
 data class SessionCelebration(
     val durationMinutes: Int,
     val subjectName: String,
-    val plantName: String,
-    val stageLabel: String,
-    val leveledUp: Boolean,
-    val seedsEarned: Int,
+    val plantName: String = "",
+    val stageLabel: String = "",
+    val leveledUp: Boolean = false,
+    val seedsEarned: Int = 0,
     val newlyUnlockedDecoration: GardenDecoration? = null,
     val activityLabel: String = StudyActivityType.STUDYING.label,
     val activityCategory: ActivityCategory = ActivityCategory.STUDY,
-    val canReturnToStudy: Boolean = false
+    val canReturnToStudy: Boolean = false,
+    val actualSeconds: Int = durationMinutes * 60,
+    val plannedSeconds: Int = durationMinutes * 60,
+    val endedEarly: Boolean = false,
+    val linkedTaskId: Long? = null,
+    val linkedTaskTitle: String = ""
 )
 
 object OnboardingOptions {
@@ -723,3 +773,241 @@ object OnboardingOptions {
     val breakDurationChoices = listOf(5, 10, 15)
     val dailyTargetChoices = listOf(30, 60, 120, 180)
 }
+
+// ============================================================================
+// FOCUS GUARD BLOCKLISTS, STUDY-ONLY YOUTUBE, USAGE ANALYTICS & CLOUD MODELS
+// ============================================================================
+
+enum class BlockedAppCategory(val label: String, val accentHex: Long) {
+    SOCIAL_MEDIA("Social Media", 0xFFEC4899),
+    SHORT_VIDEO("Short Videos", 0xFFF43F5E),
+    GAMES("Games", 0xFFF59E0B),
+    ENTERTAINMENT("Entertainment", 0xFF06B6D4),
+    SHOPPING("Shopping", 0xFFFB7185),
+    OTT_STREAMING("Streaming & Video", 0xFF8B5CF6),
+    OTHER("Other Distracting Apps", 0xFF94A3B8)
+}
+
+/**
+ * Explicit, time-boxed exception allowing a blocked app temporarily with a user-selected reason.
+ */
+data class TemporaryAppAllowance(
+    val packageName: String,
+    val appLabel: String,
+    val reason: String,
+    val grantedAtEpochMs: Long,
+    val expiresAtEpochMs: Long
+) {
+    fun isActive(nowEpochMs: Long): Boolean = expiresAtEpochMs > nowEpochMs
+
+    fun remainingSeconds(nowEpochMs: Long): Int =
+        ((expiresAtEpochMs - nowEpochMs) / 1000L).toInt().coerceAtLeast(0)
+
+    fun remainingMinutes(nowEpochMs: Long): Int =
+        ((remainingSeconds(nowEpochMs) + 59) / 60).coerceAtLeast(0)
+}
+
+/**
+ * Standalone Focus Guard blocking session controllable directly from the Block tab
+ * (independent of or alongside the Focus timer).
+ */
+data class ManualBlockingSession(
+    val isActive: Boolean = false,
+    val isPaused: Boolean = false,
+    val startedAtEpochMs: Long = 0L,
+    val endsAtEpochMs: Long = 0L,
+    val remainingOnPauseMs: Long = 0L
+) {
+    fun isEnforcing(nowEpochMs: Long): Boolean {
+        if (!isActive || isPaused) return false
+        return endsAtEpochMs <= 0L || nowEpochMs < endsAtEpochMs
+    }
+
+    fun remainingSeconds(nowEpochMs: Long): Int {
+        if (!isActive) return 0
+        val ms = if (isPaused) {
+            remainingOnPauseMs
+        } else if (endsAtEpochMs > 0L) {
+            (endsAtEpochMs - nowEpochMs).coerceAtLeast(0L)
+        } else {
+            0L
+        }
+        return (ms / 1000L).toInt()
+    }
+}
+
+data class BlockedAppRule(
+    val packageName: String,
+    val appLabel: String,
+    val category: BlockedAppCategory = BlockedAppCategory.OTHER,
+    val blockInNormal: Boolean = false,
+    val blockInHigh: Boolean = true,
+    val blockInCustom: Boolean = true,
+    val isBlocked: Boolean = true,
+    val updatedAtMs: Long = System.currentTimeMillis()
+) {
+    fun isBlockedFor(level: FocusGuardLevel): Boolean {
+        if (!isBlocked) return false
+        return when (level) {
+            FocusGuardLevel.NORMAL -> blockInNormal
+            FocusGuardLevel.HIGH -> blockInHigh
+            FocusGuardLevel.CUSTOM -> blockInCustom
+        }
+    }
+}
+
+enum class StudyResourceType(val label: String) {
+    VIDEO("Study Video"),
+    PLAYLIST("Playlist"),
+    CHANNEL("Study Channel")
+}
+
+data class StudyResource(
+    val id: Long = 0L,
+    val subjectId: Long? = null,
+    val title: String,
+    val url: String,
+    val resourceType: StudyResourceType = StudyResourceType.VIDEO,
+    val channelName: String = "",
+    val lastOpenedAtMs: Long = 0L,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
+enum class UsageAnalyticsCategory(
+    val label: String,
+    val accentHex: Long,
+    val isDistracting: Boolean
+) {
+    SOCIAL_MEDIA("Social Media", 0xFFEC4899, true),
+    SHORT_VIDEO("Short Videos", 0xFFF43F5E, true),
+    GAMING("Games", 0xFFF59E0B, true),
+    OTT_VIDEO("Streaming & Video", 0xFF8B5CF6, true),
+    SHOPPING("Shopping", 0xFFFB7185, true),
+    STUDY_PRODUCTIVITY("Study & Work", 0xFF2FA687, false),
+    COMMUNICATION("Communication", 0xFF3B82F6, false),
+    OTHER("Other", 0xFF94A3B8, false)
+}
+
+enum class UsagePeriodMode(val label: String) {
+    LAST_7_DAYS("7 Days"),
+    LAST_30_DAYS("30 Days"),
+    SINGLE_DAY("Single Day"),
+    CUSTOM_RANGE("Custom")
+}
+
+data class AppUsageEntry(
+    val packageName: String,
+    val appName: String,
+    val category: UsageAnalyticsCategory,
+    val totalTimeMs: Long,
+    val launchCount: Int,
+    val sharePercent: Float
+) {
+    val totalMinutes: Int get() = (totalTimeMs / 60_000L).toInt()
+}
+
+data class CategoryUsageEntry(
+    val category: UsageAnalyticsCategory,
+    val totalTimeMs: Long,
+    val sharePercent: Float,
+    val appCount: Int
+) {
+    val totalMinutes: Int get() = (totalTimeMs / 60_000L).toInt()
+}
+
+data class DailyScreenTimePoint(
+    val dateEpochDay: Long,
+    val label: String,
+    val totalTimeMs: Long,
+    val distractingTimeMs: Long,
+    val studyTimeMs: Long
+) {
+    val totalMinutes: Int get() = (totalTimeMs / 60_000L).toInt()
+}
+
+data class PhoneUsageReport(
+    val permissionGranted: Boolean = false,
+    val isLoading: Boolean = false,
+    val periodMode: UsagePeriodMode = UsagePeriodMode.LAST_7_DAYS,
+    val startEpochDay: Long = LocalDate.now().minusDays(6).toEpochDay(),
+    val endEpochDay: Long = LocalDate.now().toEpochDay(),
+    val totalScreenTimeMs: Long = 0L,
+    val dailyAverageMs: Long = 0L,
+    val previousPeriodTotalMs: Long = 0L,
+    val deltaPercentVsPrevious: Int? = null,
+    val appUsages: List<AppUsageEntry> = emptyList(),
+    val categoryUsages: List<CategoryUsageEntry> = emptyList(),
+    val dailyTrend: List<DailyScreenTimePoint> = emptyList(),
+    val mostDistractingApps: List<AppUsageEntry> = emptyList(),
+    val totalLaunches: Int = 0,
+    val insights: List<String> = emptyList(),
+    val lastRefreshedMs: Long = 0L,
+    val errorMessage: String? = null
+) {
+    val totalMinutes: Int get() = (totalScreenTimeMs / 60_000L).toInt()
+    val dailyAverageMinutes: Int get() = (dailyAverageMs / 60_000L).toInt()
+    val distractingMinutes: Int
+        get() = categoryUsages.filter { it.category.isDistracting }.sumOf { it.totalMinutes }
+    val studyMinutes: Int
+        get() = categoryUsages.firstOrNull { it.category == UsageAnalyticsCategory.STUDY_PRODUCTIVITY }?.totalMinutes ?: 0
+}
+
+/**
+ * Transparent, consent-based Family / Parent Mode configuration.
+ * Never performs covert surveillance; always displays a visible indicator to the device user.
+ */
+data class FamilyControlSettings(
+    val isEnabled: Boolean = false,
+    val guardianName: String = "",
+    val pinHash: String = "",
+    val dailyScreenBudgetMinutes: Int = 180,
+    val dailyDistractingBudgetMinutes: Int = 45,
+    val studyGoalBeforeEntertainmentMinutes: Int = 60,
+    val lockFocusGuardRules: Boolean = false,
+    val shareWeeklySummaryWithParent: Boolean = false
+)
+
+data class SupabaseAuthSession(
+    val userId: String = "",
+    val email: String = "",
+    val accessToken: String = "",
+    val refreshToken: String = "",
+    val expiresAtEpochSec: Long = 0L,
+    val providers: List<String> = emptyList(),
+    val displayNameHint: String = ""
+) {
+    val isSignedIn: Boolean get() = userId.isNotBlank() && accessToken.isNotBlank()
+    val hasEmailProvider: Boolean get() = providers.any { it.equals("email", ignoreCase = true) }
+    val providerLabels: List<String>
+        get() = providers.mapNotNull { raw ->
+            when (raw.lowercase()) {
+                "email" -> "Email"
+                else -> raw.replaceFirstChar { it.uppercase() }.takeIf { it.isNotBlank() }
+            }
+        }.distinct()
+
+    fun isExpired(nowEpochSec: Long = System.currentTimeMillis() / 1000L): Boolean =
+        expiresAtEpochSec > 0L && nowEpochSec >= (expiresAtEpochSec - 60L)
+}
+
+enum class CloudSyncStatus(val label: String) {
+    OFFLINE_GUEST("Local Only"),
+    UNCONFIGURED("Cloud Setup Needed"),
+    IDLE("Synced"),
+    SYNCING("Syncing…"),
+    PENDING("Pending Sync"),
+    ERROR("Sync Retry Needed")
+}
+
+data class CloudSyncState(
+    val isConfigured: Boolean = false,
+    val status: CloudSyncStatus = CloudSyncStatus.OFFLINE_GUEST,
+    val session: SupabaseAuthSession = SupabaseAuthSession(),
+    val pendingOutboxCount: Int = 0,
+    val lastSyncedAtMs: Long = 0L,
+    val lastError: String? = null,
+    val isAuthBusy: Boolean = false,
+    val authNotice: String? = null
+)
+
+

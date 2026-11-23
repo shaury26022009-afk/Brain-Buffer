@@ -30,6 +30,7 @@ class MainActivity : ComponentActivity() {
     private val isAppInForegroundState = mutableStateOf(true)
     private val pendingNotificationRoute = mutableStateOf<String?>(null)
     private val pendingOpenControlledAccess = mutableStateOf(false)
+    private val pendingOpenChangePurpose = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,6 +40,11 @@ class MainActivity : ComponentActivity() {
             BrainBufferNotificationManager.EXTRA_OPEN_CONTROLLED_ACCESS,
             false
         ) ?: false
+        pendingOpenChangePurpose.value = intent?.getBooleanExtra(
+            BrainBufferNotificationManager.EXTRA_OPEN_CHANGE_PURPOSE,
+            false
+        ) ?: false
+        handleAuthRedirectIfPresent(intent)
 
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
@@ -49,10 +55,10 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+            val shellState by viewModel.themeShellState.collectAsStateWithLifecycle()
             val navigationState = rememberBrainBufferNavigationState()
             val systemDark = isSystemInDarkTheme()
-            val useDark = when (uiState.preferences.themeMode) {
+            val useDark = when (shellState.themeMode) {
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
                 ThemeMode.SYSTEM -> systemDark
@@ -60,12 +66,18 @@ class MainActivity : ComponentActivity() {
             val isInForeground by isAppInForegroundState
             val deepLinkRoute by pendingNotificationRoute
             val openControlledAccess by pendingOpenControlledAccess
+            val openChangePurpose by pendingOpenChangePurpose
 
-            LaunchedEffect(deepLinkRoute, uiState.preferences.isLoaded, uiState.preferences.onboardingCompleted) {
-                if (deepLinkRoute != null && uiState.preferences.isLoaded && uiState.preferences.onboardingCompleted) {
+            LaunchedEffect(deepLinkRoute, shellState.isLoaded, shellState.onboardingCompleted) {
+                if (deepLinkRoute != null && shellState.isLoaded && shellState.onboardingCompleted) {
                     when (deepLinkRoute) {
-                        AppRoutes.STRICT_FOCUS -> navigationState.navigateToStrictFocus()
-                        AppRoutes.FOCUS -> navigationState.navigateToTopLevel(BottomNavDestination.FOCUS)
+                        AppRoutes.STRICT_FOCUS, AppRoutes.FOCUS, AppRoutes.BLOCK ->
+                            navigationState.navigateToTopLevel(BottomNavDestination.FOCUS)
+                        AppRoutes.INSIGHTS, AppRoutes.USAGE ->
+                            navigationState.navigateToTopLevel(BottomNavDestination.INSIGHTS)
+                        AppRoutes.PROFILE, AppRoutes.SETTINGS ->
+                            navigationState.navigateToTopLevel(BottomNavDestination.SETTINGS)
+                        else -> navigationState.navigateToTopLevel(BottomNavDestination.HOME)
                     }
                     pendingNotificationRoute.value = null
                 }
@@ -91,16 +103,18 @@ class MainActivity : ComponentActivity() {
             }
 
             BrainBufferTheme(
-                themeMode = uiState.preferences.themeMode,
-                reducedMotionOverride = uiState.preferences.reducedMotionOverride,
-                performanceOverride = uiState.preferences.performanceOverride,
+                themeMode = shellState.themeMode,
+                reducedMotionOverride = shellState.reducedMotionOverride,
+                performanceOverride = shellState.performanceOverride,
                 isAppInForeground = isInForeground
             ) {
                 BrainBufferApp(
                     viewModel = viewModel,
                     navigationState = navigationState,
                     openControlledAccessRequest = openControlledAccess,
-                    onControlledAccessRequestConsumed = { pendingOpenControlledAccess.value = false }
+                    onControlledAccessRequestConsumed = { pendingOpenControlledAccess.value = false },
+                    openChangePurposeRequest = openChangePurpose,
+                    onChangePurposeRequestConsumed = { pendingOpenChangePurpose.value = false }
                 )
             }
         }
@@ -114,6 +128,19 @@ class MainActivity : ComponentActivity() {
         }
         if (intent.getBooleanExtra(BrainBufferNotificationManager.EXTRA_OPEN_CONTROLLED_ACCESS, false)) {
             pendingOpenControlledAccess.value = true
+        }
+        if (intent.getBooleanExtra(BrainBufferNotificationManager.EXTRA_OPEN_CHANGE_PURPOSE, false)) {
+            pendingOpenChangePurpose.value = true
+        }
+        handleAuthRedirectIfPresent(intent)
+    }
+
+    private fun handleAuthRedirectIfPresent(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme == com.example.cloud.SupabaseConfig.AUTH_REDIRECT_SCHEME &&
+            uri.host == com.example.cloud.SupabaseConfig.AUTH_REDIRECT_HOST
+        ) {
+            viewModel.handleAuthCallbackUri(uri)
         }
     }
 

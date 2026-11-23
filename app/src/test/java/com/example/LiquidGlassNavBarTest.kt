@@ -32,7 +32,7 @@ class LiquidGlassNavBarTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun `single liquid glass bar renders all five destinations and switches smoothly on repeated taps`() {
+    fun `single liquid glass bar renders all four destinations and switches smoothly on repeated taps`() {
         var current by mutableStateOf(BottomNavDestination.HOME)
 
         composeRule.setContent {
@@ -46,21 +46,21 @@ class LiquidGlassNavBarTest {
             }
         }
 
-        // Exactly one floating Liquid Glass navigation bar exists
+        // Exactly one floating Liquid Glass navigation bar with 4 destinations exists
         composeRule.onAllNodesWithTag("brain_buffer_bottom_bar").assertCountEquals(1)
+        assertEquals(4, BottomNavDestination.entries.size)
 
         BottomNavDestination.entries.forEach { destination ->
             composeRule.onNodeWithTag(destination.testTag).assertIsDisplayed()
         }
 
-        // Repeatedly switch across all five destinations
+        // Repeatedly switch across all four destinations
         listOf(
             BottomNavDestination.FOCUS,
-            BottomNavDestination.PLANNER,
-            BottomNavDestination.GARDEN,
-            BottomNavDestination.PROFILE,
+            BottomNavDestination.INSIGHTS,
+            BottomNavDestination.SETTINGS,
             BottomNavDestination.HOME,
-            BottomNavDestination.GARDEN,
+            BottomNavDestination.INSIGHTS,
             BottomNavDestination.FOCUS
         ).forEach { target ->
             composeRule.onNodeWithTag(target.testTag).performClick()
@@ -87,8 +87,7 @@ class LiquidGlassNavBarTest {
             }
         }
 
-        // Long press Planner in place and release — must NOT trigger accidental navigation
-        composeRule.onNodeWithTag(BottomNavDestination.PLANNER.testTag).performTouchInput {
+        composeRule.onNodeWithTag(BottomNavDestination.INSIGHTS.testTag).performTouchInput {
             longClick()
         }
         composeRule.waitForIdle()
@@ -116,13 +115,11 @@ class LiquidGlassNavBarTest {
         }
 
         composeRule.onNodeWithTag("brain_buffer_bottom_bar").performTouchInput {
-            val start = Offset(width * 0.10f, height * 0.50f)
-            val end = Offset(width * 0.70f, height * 0.50f) // Garden (slot 3 of 5)
+            val start = Offset(width * 0.12f, height * 0.50f)
+            val end = Offset(width * 0.62f, height * 0.50f) // Insights (slot 3 of 4)
             down(start)
-            advanceEventTime(320L) // Trigger long-press expansion
-            moveTo(Offset(width * 0.30f, height * 0.50f))
-            advanceEventTime(60L)
-            moveTo(Offset(width * 0.50f, height * 0.50f))
+            advanceEventTime(320L)
+            moveTo(Offset(width * 0.37f, height * 0.50f))
             advanceEventTime(60L)
             moveTo(end)
             advanceEventTime(60L)
@@ -130,7 +127,7 @@ class LiquidGlassNavBarTest {
         }
         composeRule.waitForIdle()
 
-        assertEquals(BottomNavDestination.GARDEN, current)
+        assertEquals(BottomNavDestination.INSIGHTS, current)
         assertEquals(1, selectionCount)
     }
 
@@ -148,17 +145,17 @@ class LiquidGlassNavBarTest {
             }
         }
 
-        // Drag from Home (left) across to Profile (right)
+        // Drag from Home (left) across to Settings (right)
         composeRule.onNodeWithTag("brain_buffer_bottom_bar").performTouchInput {
             swipe(
-                start = Offset(width * 0.10f, height * 0.50f),
+                start = Offset(width * 0.12f, height * 0.50f),
                 end = Offset(width * 0.90f, height * 0.50f),
                 durationMillis = 300L
             )
         }
         composeRule.waitForIdle()
 
-        assertEquals(BottomNavDestination.PROFILE, current)
+        assertEquals(BottomNavDestination.SETTINGS, current)
     }
 
     @Test
@@ -180,12 +177,11 @@ class LiquidGlassNavBarTest {
         }
 
         composeRule.onNodeWithTag("brain_buffer_bottom_bar").performTouchInput {
-            down(Offset(width * 0.10f, height * 0.50f))
+            down(Offset(width * 0.12f, height * 0.50f))
             advanceEventTime(320L)
-            moveTo(Offset(width * 0.70f, height * 0.50f))
+            moveTo(Offset(width * 0.62f, height * 0.50f))
             advanceEventTime(60L)
-            // Drag well above the navigation bar before releasing
-            moveTo(Offset(width * 0.70f, -600f))
+            moveTo(Offset(width * 0.62f, -600f))
             advanceEventTime(60L)
             up()
         }

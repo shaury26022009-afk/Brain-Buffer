@@ -62,48 +62,48 @@ internal data class LiquidGlassPalette(
 internal fun liquidGlassPalette(isDark: Boolean): LiquidGlassPalette {
     return if (isDark) {
         LiquidGlassPalette(
-            trackTop = Color(0xCC18181D),
-            trackBottom = Color(0xDC0B0B0E),
-            trackInnerSheen = Color(0x16FFFFFF),
-            trackBorderTop = Color(0x46FFFFFF),
-            trackBorderMid = Color(0x18FFFFFF),
-            trackBorderBottom = Color(0x28FFFFFF),
-            trackShadow = Color(0xCC000000),
-            // Resting capsule: sleek translucent smoked glass with delicate violet shimmer (never chalky)
-            restCapsuleFillTop = Color(0x24FFFFFF),
-            restCapsuleFillBottom = Color(0x12FFFFFF),
+            trackTop = Color(0xDC1B1B22),
+            trackBottom = Color(0xE80C0C10),
+            trackInnerSheen = Color(0x1CFFFFFF),
+            trackBorderTop = Color(0x52FFFFFF),
+            trackBorderMid = Color(0x1CFFFFFF),
+            trackBorderBottom = Color(0x30FFFFFF),
+            trackShadow = Color(0xD8000000),
+            // Resting capsule: sleek sculpted crystal glass inside track, unmistakable even on dim OLED
+            restCapsuleFillTop = Color(0x30FFFFFF),
+            restCapsuleFillBottom = Color(0x18FFFFFF),
             // Expanded/moving lens: crystal-clear refractive droplet so the magnified icon shines sharply through
-            lensClearFillTop = Color(0x12FFFFFF),
-            lensClearFillBottom = Color(0x08FFFFFF),
-            capsuleLavenderTint = Color(0x1FB7A1F7),
-            capsuleTopReflection = Color(0x20FFFFFF),
-            capsuleBorderTop = Color(0xA8FFFFFF),
-            capsuleBorderMid = Color(0x26FFFFFF),
-            capsuleBorderBottom = Color(0x64FFFFFF),
-            capsuleLiftShadow = Color(0xA8000000),
+            lensClearFillTop = Color(0x16FFFFFF),
+            lensClearFillBottom = Color(0x0AFFFFFF),
+            capsuleLavenderTint = Color(0x2EB7A1F7),
+            capsuleTopReflection = Color(0x28FFFFFF),
+            capsuleBorderTop = Color(0xB8FFFFFF),
+            capsuleBorderMid = Color(0x30FFFFFF),
+            capsuleBorderBottom = Color(0x70FFFFFF),
+            capsuleLiftShadow = Color(0xB4000000),
             selectedIcon = LavenderLuminous,
             unselectedIcon = Color(0xFFEBEBF0),
-            unselectedLabel = Color(0xFFA5A5B2)
+            unselectedLabel = Color(0xFFA8A8B6)
         )
     } else {
         LiquidGlassPalette(
-            trackTop = Color(0xDCFAF8FE),
-            trackBottom = Color(0xD4EFE9FA),
-            trackInnerSheen = Color(0x80FFFFFF),
+            trackTop = Color(0xE6FAF8FE),
+            trackBottom = Color(0xDFEFE9FA),
+            trackInnerSheen = Color(0x8EFFFFFF),
             trackBorderTop = Color(0xFFFFFFFF),
-            trackBorderMid = Color(0x64C7B7FA),
-            trackBorderBottom = Color(0x8CD3C6F8),
-            trackShadow = Color(0x2023115E),
-            restCapsuleFillTop = Color(0xECFFFFFF),
-            restCapsuleFillBottom = Color(0xCCE9E0FF),
-            lensClearFillTop = Color(0x52FFFFFF),
-            lensClearFillBottom = Color(0x26E2D5FF),
-            capsuleLavenderTint = Color(0x166B4CE6),
-            capsuleTopReflection = Color(0x78FFFFFF),
+            trackBorderMid = Color(0x6CC7B7FA),
+            trackBorderBottom = Color(0x94D3C6F8),
+            trackShadow = Color(0x2423115E),
+            restCapsuleFillTop = Color(0xF5FFFFFF),
+            restCapsuleFillBottom = Color(0xD8E8DEFF),
+            lensClearFillTop = Color(0x58FFFFFF),
+            lensClearFillBottom = Color(0x2CE2D5FF),
+            capsuleLavenderTint = Color(0x1C6B4CE6),
+            capsuleTopReflection = Color(0x84FFFFFF),
             capsuleBorderTop = Color(0xFFFFFFFF),
-            capsuleBorderMid = Color(0x74B7A1F7),
-            capsuleBorderBottom = Color(0xD8FFFFFF),
-            capsuleLiftShadow = Color(0x2423115E),
+            capsuleBorderMid = Color(0x80B7A1F7),
+            capsuleBorderBottom = Color(0xE0FFFFFF),
+            capsuleLiftShadow = Color(0x2823115E),
             selectedIcon = VioletCore,
             unselectedIcon = Color(0xFF474159),
             unselectedLabel = Color(0xFF665E7B)
@@ -291,7 +291,8 @@ internal fun DrawScope.drawLiquidGlassCapsule(
     isVertical: Boolean = false,
     customCornerRadiusPx: Float? = null,
     enableSpecularSheen: Boolean = true,
-    enableAmbientShadow: Boolean = true
+    enableAmbientShadow: Boolean = true,
+    reusablePath: Path? = null
 ) {
     val clampedWidth = widthPx.coerceAtLeast(1f)
     val clampedHeight = heightPx.coerceAtLeast(1f)
@@ -319,7 +320,8 @@ internal fun DrawScope.drawLiquidGlassCapsule(
         )
     }
 
-    val capsulePath = Path().apply {
+    val capsulePath = (reusablePath ?: Path()).apply {
+        reset()
         addRoundRect(
             RoundRect(
                 rect = Rect(topLeft, capsuleSize),

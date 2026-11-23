@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -40,16 +39,17 @@ import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Event
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Schedule
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -57,6 +57,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -72,7 +73,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -85,12 +85,11 @@ import com.example.model.Subject
 import com.example.model.TaskPriority
 import com.example.ui.components.EmptySanctuaryCard
 import com.example.ui.components.LiquidGlassButton
-import com.example.ui.components.LiquidGlassCard
 import com.example.ui.components.LiquidGlassChip
 import com.example.ui.components.LiquidGlassProgressBar
+import com.example.ui.components.LiquidGlassSearchBar
 import com.example.ui.components.LiquidGlassSecondaryButton
 import com.example.ui.components.LiquidGlassSegmentedControl
-import com.example.ui.components.LiquidGlassTone
 import com.example.ui.components.PriorityBadge
 import com.example.ui.components.SanctuaryBackdrop
 import com.example.ui.components.SanctuaryCard
@@ -102,23 +101,26 @@ import com.example.viewmodel.BrainBufferUiState
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import java.time.format.TextStyle
 import java.util.Locale
 
 private enum class PlannerTab(val label: String) {
-    DAILY("Daily"),
-    WEEKLY("Weekly"),
-    DEADLINES("Deadlines"),
-    COMPLETED("Completed")
+    TODAY("Today"),
+    UPCOMING("Upcoming"),
+    OVERDUE("Overdue"),
+    WEEKLY("Weekly")
 }
 
-private data class CalendarDayOption(
+private data class QuickDueDateOption(
     val epochDay: Long,
-    val dayShort: String,
-    val dayNum: String,
-    val fullLabel: String
+    val label: String
 )
 
+/**
+ * Clean, practical Planner Screen with 4 focused views:
+ * Today | Upcoming | Overdue | Weekly + collapsible Completed tasks section.
+ * Removed cluttered 14-day/7-day calendar ribbons while keeping full CRUD,
+ * search, subject filters, priority badges, and one-tap Start Focus linking.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlannerScreen(
@@ -135,65 +137,101 @@ fun PlannerScreen(
         notes: String
     ) -> Unit,
     onDeleteTask: (Long) -> Unit,
-    onUndoDelete: () -> Unit
+    onUndoDelete: () -> Unit,
+    onStartFocusForTask: (StudyTask) -> Unit = {}
 ) {
-    val today = remember { LocalDate.now() }
-    val todayEpoch = today.toEpochDay()
+    val todayEpoch = uiState.todayEpochDay
+    val today = remember(todayEpoch) { LocalDate.ofEpochDay(todayEpoch) }
     val subjectMap = remember(uiState.subjects) { uiState.subjects.associateBy { it.id } }
+    val adaptive = LocalAdaptiveMetrics.current
 
-    var activeTab by remember { mutableStateOf(PlannerTab.DAILY) }
-    var selectedEpochDay by remember { mutableLongStateOf(todayEpoch) }
+    var activeTab by remember { mutableStateOf(PlannerTab.TODAY) }
     var selectedSubjectId by remember { mutableStateOf<Long?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var showCompletedSection by remember { mutableStateOf(false) }
     var showTaskSheet by remember { mutableStateOf(false) }
     var editingTask by remember { mutableStateOf<StudyTask?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    val adaptive = LocalAdaptiveMetrics.current
-    val twoWeekDays = remember(today) {
-        val fullFmt = DateTimeFormatter.ofPattern("EEE, MMM d", Locale.getDefault())
-        (0..13).map { offset ->
-            val date = today.plusDays(offset.toLong())
-            CalendarDayOption(
-                epochDay = date.toEpochDay(),
-                dayShort = date.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault()),
-                dayNum = date.dayOfMonth.toString(),
-                fullLabel = when (offset) {
-                    0 -> "Today"
-                    1 -> "Tomorrow"
-                    else -> date.format(fullFmt)
-                }
-            )
-        }
-    }
-    val weekDays = remember(twoWeekDays) { twoWeekDays.take(7) }
-
-    val displayedTasks = remember(uiState.tasks, activeTab, selectedEpochDay, selectedSubjectId, todayEpoch) {
-        uiState.tasks.filter { task ->
-            val matchesSubject = selectedSubjectId == null || task.subjectId == selectedSubjectId
-            val matchesTab = when (activeTab) {
-                PlannerTab.DAILY -> task.dueDateEpochDay == selectedEpochDay
-                PlannerTab.WEEKLY -> task.dueDateEpochDay in todayEpoch..(todayEpoch + 6)
-                PlannerTab.DEADLINES -> !task.isCompleted && task.dueDateEpochDay >= todayEpoch
-                PlannerTab.COMPLETED -> task.isCompleted
-            }
-            matchesSubject && matchesTab
-        }.sortedWith(
-            when (activeTab) {
-                PlannerTab.COMPLETED -> compareByDescending<StudyTask> { it.completedAtMs ?: 0L }
-                else -> compareBy<StudyTask> { it.isCompleted }.thenBy { it.dueDateEpochDay }.thenBy { it.priority.sortOrder }
-            }
+    val dueDateOptions = remember(today) {
+        val fmt = DateTimeFormatter.ofPattern("EEE, MMM d", Locale.getDefault())
+        listOf(
+            QuickDueDateOption(today.toEpochDay(), "Today"),
+            QuickDueDateOption(today.plusDays(1).toEpochDay(), "Tomorrow"),
+            QuickDueDateOption(today.plusDays(2).toEpochDay(), today.plusDays(2).format(fmt)),
+            QuickDueDateOption(today.plusDays(3).toEpochDay(), today.plusDays(3).format(fmt)),
+            QuickDueDateOption(today.plusDays(5).toEpochDay(), today.plusDays(5).format(fmt)),
+            QuickDueDateOption(today.plusDays(7).toEpochDay(), "Next week"),
+            QuickDueDateOption(today.plusDays(14).toEpochDay(), "In 2 weeks")
         )
     }
 
-    val doneInView = displayedTasks.count { it.isCompleted }
-    val totalInView = displayedTasks.size
-    val progressRatio = if (totalInView == 0) 0f else doneInView.toFloat() / totalInView.toFloat()
-    val upcomingExams = remember(uiState.subjects, todayEpoch) {
-        uiState.subjects
-            .filter { it.examDateEpochDay != null && it.examDateEpochDay >= todayEpoch }
-            .sortedBy { it.examDateEpochDay }
+    val trimmedQuery = searchQuery.trim()
+    val filteredAll = remember(uiState.tasks, selectedSubjectId, trimmedQuery, subjectMap) {
+        uiState.tasks.filter { task ->
+            val matchesSubject = selectedSubjectId == null || task.subjectId == selectedSubjectId
+            val matchesSearch = if (trimmedQuery.isEmpty()) {
+                true
+            } else {
+                val subjectName = task.subjectId?.let { subjectMap[it]?.name }.orEmpty()
+                task.title.contains(trimmedQuery, ignoreCase = true) ||
+                    task.notes.contains(trimmedQuery, ignoreCase = true) ||
+                    subjectName.contains(trimmedQuery, ignoreCase = true)
+            }
+            matchesSubject && matchesSearch
+        }
+    }
+
+    val overdueCount = remember(filteredAll, todayEpoch) {
+        filteredAll.count { !it.isCompleted && it.dueDateEpochDay < todayEpoch }
+    }
+
+    val activeTasksInTab = remember(filteredAll, activeTab, todayEpoch, trimmedQuery) {
+        filteredAll.filter { task ->
+            if (trimmedQuery.isNotEmpty()) {
+                !task.isCompleted
+            } else {
+                when (activeTab) {
+                    PlannerTab.TODAY -> !task.isCompleted && task.dueDateEpochDay == todayEpoch
+                    PlannerTab.UPCOMING -> !task.isCompleted && task.dueDateEpochDay > todayEpoch
+                    PlannerTab.OVERDUE -> !task.isCompleted && task.dueDateEpochDay < todayEpoch
+                    PlannerTab.WEEKLY -> !task.isCompleted && task.dueDateEpochDay in todayEpoch..(todayEpoch + 6)
+                }
+            }
+        }.sortedWith(compareBy<StudyTask> { it.dueDateEpochDay }.thenBy { it.priority.sortOrder })
+    }
+
+    val completedTasks = remember(filteredAll, activeTab, todayEpoch, trimmedQuery) {
+        filteredAll.filter { task ->
+            if (!task.isCompleted) return@filter false
+            if (trimmedQuery.isNotEmpty()) return@filter true
+            when (activeTab) {
+                PlannerTab.TODAY -> task.dueDateEpochDay == todayEpoch
+                PlannerTab.WEEKLY -> task.dueDateEpochDay in todayEpoch..(todayEpoch + 6)
+                else -> true
+            }
+        }.sortedByDescending { it.completedAtMs ?: 0L }
+    }
+
+    val todayDone = uiState.todayTasks.count { it.isCompleted }
+    val todayTotal = uiState.todayTasks.size
+    val todayProgress = if (todayTotal == 0) 0f else todayDone.toFloat() / todayTotal.toFloat()
+
+    val deleteWithUndo: (StudyTask) -> Unit = { task ->
+        onDeleteTask(task.id)
+        scope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            val result = snackbarHostState.showSnackbar(
+                message = "Deleted \"${task.title}\"",
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Short
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                onUndoDelete()
+            }
+        }
     }
 
     SanctuaryBackdrop {
@@ -201,212 +239,6 @@ fun PlannerScreen(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.TopCenter
         ) {
-            if (adaptive.useTwoColumnLayout) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .widthIn(max = adaptive.maxContentWidth)
-                        .statusBarsPadding()
-                        .navigationBarsPadding()
-                        .padding(
-                            start = adaptive.horizontalPadding,
-                            end = adaptive.horizontalPadding,
-                            top = 16.dp
-                        )
-                        .testTag("planner_screen"),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "Study Planner",
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-                            Text(
-                                text = "${uiState.tasks.count { !it.isCompleted }} active · ${uiState.completedTasksCount} completed",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        PlannerModeSwitcher(
-                            activeTab = activeTab,
-                            onSelectTab = { activeTab = it },
-                            modifier = Modifier.widthIn(max = 420.dp)
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .testTag("planner_tablet_split"),
-                        horizontalArrangement = Arrangement.spacedBy(20.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        // Left Pane: 2-week calendar grid, progress, subject filters, upcoming exams
-                        Column(
-                            modifier = Modifier
-                                .weight(0.92f)
-                                .verticalScroll(rememberScrollState())
-                                .padding(bottom = adaptive.bottomContentClearance + 16.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            SanctuaryCard(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("planner_tablet_calendar_grid"),
-                                contentPadding = PaddingValues(14.dp)
-                            ) {
-                                Text(
-                                    text = "NEXT 14 DAYS",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    twoWeekDays.chunked(7).forEach { weekRow ->
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            weekRow.forEach { day ->
-                                                val dayTasks = uiState.tasks.filter { it.dueDateEpochDay == day.epochDay }
-                                                PlannerCalendarDayTile(
-                                                    day = day,
-                                                    isSelected = activeTab == PlannerTab.DAILY && selectedEpochDay == day.epochDay,
-                                                    isToday = day.epochDay == todayEpoch,
-                                                    hasTasks = dayTasks.isNotEmpty(),
-                                                    allDone = dayTasks.isNotEmpty() && dayTasks.all { it.isCompleted },
-                                                    onClick = {
-                                                        selectedEpochDay = day.epochDay
-                                                        activeTab = PlannerTab.DAILY
-                                                    },
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if ((activeTab == PlannerTab.DAILY || activeTab == PlannerTab.WEEKLY) && totalInView > 0) {
-                                PlannerProgressCard(
-                                    doneInView = doneInView,
-                                    totalInView = totalInView,
-                                    progressRatio = progressRatio
-                                )
-                            }
-
-                            if (uiState.subjects.isNotEmpty()) {
-                                SanctuaryCard(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    contentPadding = PaddingValues(14.dp)
-                                ) {
-                                    Text(
-                                        text = "FILTER BY SUBJECT",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    @OptIn(ExperimentalLayoutApi::class)
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        PlannerFilterPill(
-                                            label = "All",
-                                            color = MaterialTheme.colorScheme.primary,
-                                            selected = selectedSubjectId == null,
-                                            onClick = { selectedSubjectId = null }
-                                        )
-                                        uiState.subjects.forEach { subject ->
-                                            PlannerFilterPill(
-                                                label = subject.name,
-                                                color = subject.accentColor,
-                                                selected = selectedSubjectId == subject.id,
-                                                onClick = {
-                                                    selectedSubjectId = if (selectedSubjectId == subject.id) null else subject.id
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (upcomingExams.isNotEmpty()) {
-                                UpcomingExamsCard(
-                                    upcomingExams = upcomingExams,
-                                    todayEpoch = todayEpoch
-                                )
-                            }
-                        }
-
-                        // Right Pane: Scrollable Task List
-                        LazyColumn(
-                            modifier = Modifier
-                                .weight(1.18f)
-                                .fillMaxSize(),
-                            contentPadding = PaddingValues(bottom = adaptive.bottomContentClearance + 72.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            if (displayedTasks.isEmpty()) {
-                                item {
-                                    PlannerEmptyState(
-                                        activeTab = activeTab,
-                                        onAddTask = {
-                                            editingTask = null
-                                            showTaskSheet = true
-                                        }
-                                    )
-                                }
-                            } else {
-                                items(displayedTasks, key = { it.id }) { task ->
-                                    val subject = task.subjectId?.let { subjectMap[it] }
-                                    val dateLabel = remember(task.dueDateEpochDay, todayEpoch) {
-                                        when (task.dueDateEpochDay - todayEpoch) {
-                                            0L -> "Today"
-                                            1L -> "Tomorrow"
-                                            -1L -> "Yesterday"
-                                            else -> LocalDate.ofEpochDay(task.dueDateEpochDay)
-                                                .format(DateTimeFormatter.ofPattern("EEE, MMM d", Locale.getDefault()))
-                                        }
-                                    }
-                                    PlannerTaskItemCard(
-                                        task = task,
-                                        subject = subject,
-                                        dateLabel = dateLabel,
-                                        showDate = activeTab != PlannerTab.DAILY,
-                                        onToggle = { onToggleTask(task.id) },
-                                        onEdit = {
-                                            editingTask = task
-                                            showTaskSheet = true
-                                        },
-                                        onDelete = {
-                                            onDeleteTask(task.id)
-                                            scope.launch {
-                                                snackbarHostState.currentSnackbarData?.dismiss()
-                                                val result = snackbarHostState.showSnackbar(
-                                                    message = "Deleted \"${task.title}\"",
-                                                    actionLabel = "Undo",
-                                                    duration = SnackbarDuration.Short
-                                                )
-                                                if (result == SnackbarResult.ActionPerformed) {
-                                                    onUndoDelete()
-                                                }
-                                            }
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
@@ -418,110 +250,88 @@ fun PlannerScreen(
                     start = adaptive.horizontalPadding,
                     end = adaptive.horizontalPadding,
                     top = 14.dp,
-                    bottom = adaptive.bottomContentClearance + 56.dp
+                    bottom = adaptive.bottomContentClearance + 68.dp
                 ),
                 verticalArrangement = Arrangement.spacedBy(adaptive.sectionSpacing)
             ) {
                 // Header
                 item {
-                    Column {
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(
-                            text = "Study Planner",
+                            text = "Planner",
                             style = MaterialTheme.typography.headlineMedium,
                             color = MaterialTheme.colorScheme.onBackground
                         )
+                        val overdueSuffix = if (overdueCount > 0) " · $overdueCount overdue" else ""
                         Text(
-                            text = "${uiState.tasks.count { !it.isCompleted }} active · ${uiState.completedTasksCount} completed",
+                            text = "${uiState.tasks.count { !it.isCompleted }} active · ${uiState.completedTasksCount} completed$overdueSuffix",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (overdueCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
 
-                // 4-Mode View Switcher: Daily | Weekly | Deadlines | Completed
+                // 4-Mode View Switcher: Today | Upcoming | Overdue | Weekly
                 item {
-                    PlannerModeSwitcher(
-                        activeTab = activeTab,
-                        onSelectTab = { activeTab = it }
+                    LiquidGlassSegmentedControl(
+                        items = PlannerTab.entries,
+                        selectedItem = activeTab,
+                        onSelect = { activeTab = it },
+                        labelProvider = { tab ->
+                            if (tab == PlannerTab.OVERDUE && overdueCount > 0) {
+                                "${tab.label} ($overdueCount)"
+                            } else {
+                                tab.label
+                            }
+                        },
+                        testTagProvider = { "planner_tab_${it.name.lowercase()}" }
                     )
                 }
 
-                // 7-Day Calendar Ribbon (shown in Daily & Weekly tabs)
-                if (activeTab == PlannerTab.DAILY || activeTab == PlannerTab.WEEKLY) {
-                    item {
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            items(weekDays, key = { it.epochDay }) { day ->
-                                val isSelected = activeTab == PlannerTab.DAILY && selectedEpochDay == day.epochDay
-                                val dayTasks = uiState.tasks.filter { it.dueDateEpochDay == day.epochDay }
-                                val allDone = dayTasks.isNotEmpty() && dayTasks.all { it.isCompleted }
-                                val isToday = day.epochDay == todayEpoch
+                // Search bar
+                item {
+                    LiquidGlassSearchBar(
+                        query = searchQuery,
+                        onQueryChange = { searchQuery = it },
+                        placeholder = "Search tasks, notes, or subjects…",
+                        inputTestTag = "planner_search_input"
+                    )
+                }
 
-                                LiquidGlassCard(
-                                    modifier = Modifier.width(56.dp),
-                                    tone = if (isSelected) LiquidGlassTone.ACCENT else LiquidGlassTone.STANDARD,
-                                    cornerRadius = 18.dp,
-                                    tintOverlay = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else null,
-                                    borderAccent = when {
-                                        isSelected -> MaterialTheme.colorScheme.primary
-                                        isToday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
-                                        else -> null
-                                    },
-                                    contentPadding = PaddingValues(vertical = 10.dp, horizontal = 4.dp),
-                                    onClick = {
-                                        selectedEpochDay = day.epochDay
-                                        activeTab = PlannerTab.DAILY
-                                    }
-                                ) {
-                                    Column(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Text(
-                                            text = day.dayShort,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Text(
-                                            text = day.dayNum,
-                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.dp)
-                                                .clip(CircleShape)
-                                                .background(
-                                                    when {
-                                                        dayTasks.isEmpty() -> Color.Transparent
-                                                        isSelected -> MaterialTheme.colorScheme.primary
-                                                        allDone -> MaterialTheme.colorScheme.secondary
-                                                        else -> MaterialTheme.colorScheme.primary
-                                                    }
-                                                )
-                                        )
-                                    }
-                                }
+                // Today's completion progress bar (shown on Today & Weekly when tasks exist)
+                if ((activeTab == PlannerTab.TODAY || activeTab == PlannerTab.WEEKLY) && todayTotal > 0) {
+                    item {
+                        SanctuaryCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = PaddingValues(14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Today's progress · $todayDone of $todayTotal done",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "${(todayProgress * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
                             }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            LiquidGlassProgressBar(
+                                progress = todayProgress,
+                                color = MaterialTheme.colorScheme.primary,
+                                height = 7.dp
+                            )
                         }
                     }
                 }
 
-                // Progress bar (Daily / Weekly)
-                if ((activeTab == PlannerTab.DAILY || activeTab == PlannerTab.WEEKLY) && totalInView > 0) {
-                    item {
-                        PlannerProgressCard(
-                            doneInView = doneInView,
-                            totalInView = totalInView,
-                            progressRatio = progressRatio
-                        )
-                    }
-                }
-
-                // Subject Filters (user's real subjects)
+                // Subject / Category Filters
                 if (uiState.subjects.isNotEmpty()) {
                     item {
                         LazyRow(
@@ -529,18 +339,19 @@ fun PlannerScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             item {
-                                PlannerFilterPill(
+                                LiquidGlassChip(
                                     label = "All",
-                                    color = MaterialTheme.colorScheme.primary,
                                     selected = selectedSubjectId == null,
+                                    accentColor = MaterialTheme.colorScheme.primary,
                                     onClick = { selectedSubjectId = null }
                                 )
                             }
                             items(uiState.subjects, key = { it.id }) { subject ->
-                                PlannerFilterPill(
+                                LiquidGlassChip(
                                     label = subject.name,
-                                    color = subject.accentColor,
                                     selected = selectedSubjectId == subject.id,
+                                    accentColor = subject.accentColor,
+                                    leadingDotColor = subject.accentColor,
                                     onClick = {
                                         selectedSubjectId = if (selectedSubjectId == subject.id) null else subject.id
                                     }
@@ -550,118 +361,93 @@ fun PlannerScreen(
                     }
                 }
 
-                // Upcoming Subject Exams Banner in Deadlines tab
-                if (activeTab == PlannerTab.DEADLINES) {
-                    val upcomingExams = uiState.subjects
-                        .filter { it.examDateEpochDay != null && it.examDateEpochDay >= todayEpoch }
-                        .sortedBy { it.examDateEpochDay }
-                    if (upcomingExams.isNotEmpty()) {
-                        item {
-                            SanctuaryCard(
-                                modifier = Modifier.fillMaxWidth(),
-                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                                contentPadding = PaddingValues(15.dp)
-                            ) {
-                                Text(
-                                    text = "UPCOMING EXAMS",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                upcomingExams.forEachIndexed { i, subject ->
-                                    val daysLeft = subject.daysUntilExam(todayEpoch) ?: 0L
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        SubjectTag(subject = subject)
-                                        Text(
-                                            text = if (daysLeft == 0L) "Today" else "${subject.examDateFormatted()} (${daysLeft}d)",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                    }
-                                    if (i < upcomingExams.lastIndex) Spacer(modifier = Modifier.height(8.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Task List or Helpful Empty State
-                if (displayedTasks.isEmpty()) {
+                // Active Tasks in Current View
+                if (activeTasksInTab.isEmpty()) {
                     item {
-                        val (icon, title, msg) = when (activeTab) {
-                            PlannerTab.COMPLETED -> Triple(
-                                Icons.Rounded.CheckCircle,
-                                "No completed tasks yet",
-                                "Finished tasks will appear here as you check them off."
-                            )
-                            PlannerTab.DEADLINES -> Triple(
-                                Icons.Rounded.Event,
-                                "No pending deadlines",
-                                "You're caught up. Add an assignment or exam revision anytime."
-                            )
-                            else -> Triple(
-                                Icons.Rounded.CalendarMonth,
-                                "No tasks planned here",
-                                "Break your study session into one small, clear step."
-                            )
-                        }
-                        EmptySanctuaryCard(
-                            icon = icon,
-                            title = title,
-                            message = msg,
-                            actionLabel = if (activeTab != PlannerTab.COMPLETED) "Add Task" else null,
-                            onAction = if (activeTab != PlannerTab.COMPLETED) {
-                                {
-                                    editingTask = null
-                                    showTaskSheet = true
-                                }
-                            } else null
+                        PlannerEmptyState(
+                            activeTab = activeTab,
+                            searchQuery = trimmedQuery,
+                            onClearSearch = { searchQuery = "" },
+                            onAddTask = {
+                                editingTask = null
+                                showTaskSheet = true
+                            }
                         )
                     }
                 } else {
-                    items(displayedTasks, key = { it.id }) { task ->
+                    items(activeTasksInTab, key = { it.id }) { task ->
                         val subject = task.subjectId?.let { subjectMap[it] }
-                        val dateLabel = remember(task.dueDateEpochDay, todayEpoch) {
-                            when (task.dueDateEpochDay - todayEpoch) {
-                                0L -> "Today"
-                                1L -> "Tomorrow"
-                                -1L -> "Yesterday"
-                                else -> LocalDate.ofEpochDay(task.dueDateEpochDay)
-                                    .format(DateTimeFormatter.ofPattern("EEE, MMM d", Locale.getDefault()))
-                            }
-                        }
+                        val dateLabel = formatRelativeDay(task.dueDateEpochDay, todayEpoch)
                         PlannerTaskItemCard(
                             task = task,
                             subject = subject,
                             dateLabel = dateLabel,
-                            showDate = activeTab != PlannerTab.DAILY,
+                            showDate = activeTab != PlannerTab.TODAY,
+                            isOverdue = !task.isCompleted && task.dueDateEpochDay < todayEpoch,
                             onToggle = { onToggleTask(task.id) },
+                            onStartFocus = { onStartFocusForTask(task) },
                             onEdit = {
                                 editingTask = task
                                 showTaskSheet = true
                             },
-                            onDelete = {
-                                onDeleteTask(task.id)
-                                scope.launch {
-                                    snackbarHostState.currentSnackbarData?.dismiss()
-                                    val result = snackbarHostState.showSnackbar(
-                                        message = "Deleted \"${task.title}\"",
-                                        actionLabel = "Undo",
-                                        duration = SnackbarDuration.Short
-                                    )
-                                    if (result == SnackbarResult.ActionPerformed) {
-                                        onUndoDelete()
-                                    }
-                                }
-                            }
+                            onDelete = { deleteWithUndo(task) }
                         )
                     }
                 }
-            }
+
+                // Collapsible Completed Tasks section
+                if (completedTasks.isNotEmpty()) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Completed (${completedTasks.size})",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            TextButton(
+                                onClick = { showCompletedSection = !showCompletedSection },
+                                modifier = Modifier.testTag("planner_toggle_completed_btn")
+                            ) {
+                                Text(if (showCompletedSection) "Hide" else "Show")
+                                Icon(
+                                    imageVector = if (showCompletedSection) {
+                                        Icons.Rounded.KeyboardArrowUp
+                                    } else {
+                                        Icons.Rounded.KeyboardArrowDown
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (showCompletedSection) {
+                        items(completedTasks, key = { "done_${it.id}" }) { task ->
+                            val subject = task.subjectId?.let { subjectMap[it] }
+                            PlannerTaskItemCard(
+                                task = task,
+                                subject = subject,
+                                dateLabel = formatRelativeDay(task.dueDateEpochDay, todayEpoch),
+                                showDate = true,
+                                isOverdue = false,
+                                onToggle = { onToggleTask(task.id) },
+                                onStartFocus = { onStartFocusForTask(task) },
+                                onEdit = {
+                                    editingTask = task
+                                    showTaskSheet = true
+                                },
+                                onDelete = { deleteWithUndo(task) }
+                            )
+                        }
+                    }
+                }
             }
 
             SnackbarHost(
@@ -669,7 +455,11 @@ fun PlannerScreen(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(bottom = adaptive.fabBottomPadding + 6.dp, start = adaptive.horizontalPadding, end = adaptive.horizontalPadding)
+                    .padding(
+                        bottom = adaptive.fabBottomPadding + 6.dp,
+                        start = adaptive.horizontalPadding,
+                        end = adaptive.horizontalPadding
+                    )
             )
 
             ExtendedFloatingActionButton(
@@ -706,9 +496,9 @@ fun PlannerScreen(
         ) {
             TaskEditorSheet(
                 initialTask = editingTask,
-                defaultDueEpochDay = selectedEpochDay,
+                defaultDueEpochDay = if (activeTab == PlannerTab.UPCOMING) todayEpoch + 1 else todayEpoch,
                 subjects = uiState.subjects,
-                dayOptions = twoWeekDays,
+                dueDateOptions = dueDateOptions,
                 onDismiss = { showTaskSheet = false },
                 onSave = { title, subjectId, dueEpoch, dueTime, mins, priority, notes ->
                     onSaveTask(editingTask?.id, title, subjectId, dueEpoch, dueTime, mins, priority, notes)
@@ -719,192 +509,61 @@ fun PlannerScreen(
     }
 }
 
-@Composable
-private fun PlannerModeSwitcher(
-    activeTab: PlannerTab,
-    onSelectTab: (PlannerTab) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    LiquidGlassSegmentedControl(
-        items = PlannerTab.entries,
-        selectedItem = activeTab,
-        onSelect = onSelectTab,
-        labelProvider = { it.label },
-        testTagProvider = { "planner_tab_${it.name.lowercase()}" },
-        modifier = modifier
-    )
-}
-
-@Composable
-private fun PlannerCalendarDayTile(
-    day: CalendarDayOption,
-    isSelected: Boolean,
-    isToday: Boolean,
-    hasTasks: Boolean,
-    allDone: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    LiquidGlassCard(
-        modifier = modifier,
-        tone = if (isSelected) LiquidGlassTone.ACCENT else LiquidGlassTone.SUBTLE,
-        cornerRadius = 14.dp,
-        tintOverlay = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else null,
-        borderAccent = when {
-            isSelected -> MaterialTheme.colorScheme.primary
-            isToday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
-            else -> null
-        },
-        contentPadding = PaddingValues(vertical = 8.dp, horizontal = 2.dp),
-        onClick = onClick
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Text(
-                text = day.dayShort.take(2),
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
-            Text(
-                text = day.dayNum,
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-            )
-            Box(
-                modifier = Modifier
-                    .size(5.dp)
-                    .clip(CircleShape)
-                    .background(
-                        when {
-                            !hasTasks -> Color.Transparent
-                            isSelected -> MaterialTheme.colorScheme.primary
-                            allDone -> MaterialTheme.colorScheme.secondary
-                            else -> MaterialTheme.colorScheme.primary
-                        }
-                    )
-            )
-        }
-    }
-}
-
-@Composable
-private fun PlannerProgressCard(
-    doneInView: Int,
-    totalInView: Int,
-    progressRatio: Float
-) {
-    SanctuaryCard(
-        modifier = Modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(15.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "$doneInView of $totalInView tasks completed",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "${(progressRatio * 100).toInt()}%",
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.primary
-            )
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        LiquidGlassProgressBar(
-            progress = progressRatio,
-            color = MaterialTheme.colorScheme.primary,
-            height = 7.dp
-        )
-    }
-}
-
-@Composable
-private fun UpcomingExamsCard(
-    upcomingExams: List<Subject>,
-    todayEpoch: Long
-) {
-    SanctuaryCard(
-        modifier = Modifier.fillMaxWidth(),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        contentPadding = PaddingValues(15.dp)
-    ) {
-        Text(
-            text = "UPCOMING EXAMS",
-            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-        upcomingExams.forEachIndexed { i, subject ->
-            val daysLeft = subject.daysUntilExam(todayEpoch) ?: 0L
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                SubjectTag(subject = subject)
-                Text(
-                    text = if (daysLeft == 0L) "Today" else "${subject.examDateFormatted()} (${daysLeft}d)",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-            if (i < upcomingExams.lastIndex) Spacer(modifier = Modifier.height(8.dp))
-        }
+private fun formatRelativeDay(epochDay: Long, todayEpoch: Long): String {
+    return when (epochDay - todayEpoch) {
+        0L -> "Today"
+        1L -> "Tomorrow"
+        -1L -> "Yesterday"
+        else -> LocalDate.ofEpochDay(epochDay)
+            .format(DateTimeFormatter.ofPattern("EEE, MMM d", Locale.getDefault()))
     }
 }
 
 @Composable
 private fun PlannerEmptyState(
     activeTab: PlannerTab,
+    searchQuery: String,
+    onClearSearch: () -> Unit,
     onAddTask: () -> Unit
 ) {
+    if (searchQuery.isNotEmpty()) {
+        EmptySanctuaryCard(
+            icon = Icons.Rounded.CalendarMonth,
+            title = "No matching tasks",
+            message = "No tasks or subjects matched \"$searchQuery\".",
+            actionLabel = "Clear Search",
+            onAction = onClearSearch
+        )
+        return
+    }
     val (icon, title, msg) = when (activeTab) {
-        PlannerTab.COMPLETED -> Triple(
-            Icons.Rounded.CheckCircle,
-            "No completed tasks yet",
-            "Finished tasks will appear here as you check them off."
-        )
-        PlannerTab.DEADLINES -> Triple(
-            Icons.Rounded.Event,
-            "No pending deadlines",
-            "You're caught up. Add an assignment or exam revision anytime."
-        )
-        else -> Triple(
+        PlannerTab.TODAY -> Triple(
             Icons.Rounded.CalendarMonth,
-            "No tasks planned here",
-            "Break your study session into one small, clear step."
+            "Nothing planned for today",
+            "Add one clear task and start a Focus session directly from it."
+        )
+        PlannerTab.UPCOMING -> Triple(
+            Icons.Rounded.Event,
+            "No upcoming tasks",
+            "Schedule upcoming assignments, work deliverables, or deadlines."
+        )
+        PlannerTab.OVERDUE -> Triple(
+            Icons.Rounded.CheckCircle,
+            "Zero overdue tasks",
+            "You are completely caught up on past deadlines."
+        )
+        PlannerTab.WEEKLY -> Triple(
+            Icons.Rounded.CalendarMonth,
+            "Clear week ahead",
+            "Add tasks for the next 7 days to stay ahead of deadlines."
         )
     }
     EmptySanctuaryCard(
         icon = icon,
         title = title,
         message = msg,
-        actionLabel = if (activeTab != PlannerTab.COMPLETED) "Add Task" else null,
-        onAction = if (activeTab != PlannerTab.COMPLETED) onAddTask else null
-    )
-}
-
-@Composable
-private fun PlannerFilterPill(
-    label: String,
-    color: Color,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    LiquidGlassChip(
-        label = label,
-        selected = selected,
-        accentColor = color,
-        leadingDotColor = if (label != "All" && label != "General") color else null,
-        onClick = onClick
+        actionLabel = if (activeTab != PlannerTab.OVERDUE) "Add Task" else null,
+        onAction = if (activeTab != PlannerTab.OVERDUE) onAddTask else null
     )
 }
 
@@ -914,13 +573,15 @@ private fun PlannerTaskItemCard(
     subject: Subject?,
     dateLabel: String,
     showDate: Boolean,
+    isOverdue: Boolean,
     onToggle: () -> Unit,
+    onStartFocus: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
     val reducedMotion = BrainBufferThemeTokens.reducedMotion
     val checkScale by animateFloatAsState(
-        targetValue = if (task.isCompleted) 1f else 0.9f,
+        targetValue = if (task.isCompleted) 1f else 0.92f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = if (reducedMotion) Spring.StiffnessHigh else Spring.StiffnessMedium
@@ -960,7 +621,11 @@ private fun PlannerTaskItemCard(
                         .background(if (task.isCompleted) MaterialTheme.colorScheme.primary else Color.Transparent)
                         .border(
                             width = 2.dp,
-                            color = if (task.isCompleted) MaterialTheme.colorScheme.primary else (subject?.accentColor ?: MaterialTheme.colorScheme.outline),
+                            color = when {
+                                task.isCompleted -> MaterialTheme.colorScheme.primary
+                                isOverdue -> MaterialTheme.colorScheme.error
+                                else -> subject?.accentColor ?: MaterialTheme.colorScheme.outline
+                            },
                             shape = CircleShape
                         ),
                     contentAlignment = Alignment.Center
@@ -1015,21 +680,36 @@ private fun PlannerTaskItemCard(
                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Schedule,
+                            imageVector = if (isOverdue) Icons.Rounded.WarningAmber else Icons.Rounded.Schedule,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (isOverdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(14.dp)
                         )
                         Text(
                             text = buildString {
-                                if (showDate) append("$dateLabel · ")
+                                if (showDate || isOverdue) append("$dateLabel · ")
                                 append("${task.dueTimeLabel} · ${task.estimatedMinutes}m")
                             },
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (isOverdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Row {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!task.isCompleted) {
+                            IconButton(
+                                onClick = onStartFocus,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("planner_task_focus_${task.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.PlayArrow,
+                                    contentDescription = "Start focus on ${task.title}",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
                         IconButton(onClick = onEdit, modifier = Modifier.size(36.dp)) {
                             Icon(
                                 imageVector = Icons.Outlined.Edit,
@@ -1059,7 +739,7 @@ private fun TaskEditorSheet(
     initialTask: StudyTask?,
     defaultDueEpochDay: Long,
     subjects: List<Subject>,
-    dayOptions: List<CalendarDayOption>,
+    dueDateOptions: List<QuickDueDateOption>,
     onDismiss: () -> Unit,
     onSave: (String, Long?, Long, String, Int, TaskPriority, String) -> Unit
 ) {
@@ -1081,7 +761,7 @@ private fun TaskEditorSheet(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text(
-            text = if (initialTask == null) "New Study Task" else "Edit Task",
+            text = if (initialTask == null) "New Task" else "Edit Task",
             style = MaterialTheme.typography.headlineSmall,
             color = MaterialTheme.colorScheme.onSurface
         )
@@ -1090,7 +770,7 @@ private fun TaskEditorSheet(
             value = title,
             onValueChange = { title = it },
             label = { Text("Task title") },
-            placeholder = { Text("e.g., Solve Chapter 3 problem set") },
+            placeholder = { Text("e.g., Finish quarterly report or Chapter 3 exercises") },
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier
@@ -1100,22 +780,23 @@ private fun TaskEditorSheet(
 
         if (subjects.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Subject", style = MaterialTheme.typography.labelLarge)
+                Text("Subject / Category", style = MaterialTheme.typography.labelLarge)
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    PlannerFilterPill(
+                    LiquidGlassChip(
                         label = "General",
-                        color = MaterialTheme.colorScheme.primary,
                         selected = subjectId == null,
+                        accentColor = MaterialTheme.colorScheme.primary,
                         onClick = { subjectId = null }
                     )
                     subjects.forEach { subj ->
-                        PlannerFilterPill(
+                        LiquidGlassChip(
                             label = subj.name,
-                            color = subj.accentColor,
                             selected = subjectId == subj.id,
+                            accentColor = subj.accentColor,
+                            leadingDotColor = subj.accentColor,
                             onClick = { subjectId = subj.id }
                         )
                     }
@@ -1124,9 +805,9 @@ private fun TaskEditorSheet(
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Deadline day", style = MaterialTheme.typography.labelLarge)
+            Text("Due date", style = MaterialTheme.typography.labelLarge)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(dayOptions) { slot ->
+                items(dueDateOptions, key = { it.epochDay }) { slot ->
                     val selected = dueEpochDay == slot.epochDay
                     Surface(
                         modifier = Modifier
@@ -1137,9 +818,9 @@ private fun TaskEditorSheet(
                         border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else Color.Transparent)
                     ) {
                         Text(
-                            text = slot.fullLabel,
+                            text = slot.label,
                             style = MaterialTheme.typography.labelMedium,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
                         )
                     }
@@ -1163,7 +844,7 @@ private fun TaskEditorSheet(
                 Text("Estimate: ${estimatedMinutes}m", style = MaterialTheme.typography.labelMedium)
                 Spacer(modifier = Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(20, 30, 45).forEach { m ->
+                    listOf(25, 45, 60).forEach { m ->
                         val sel = estimatedMinutes == m
                         Surface(
                             modifier = Modifier
@@ -1207,7 +888,7 @@ private fun TaskEditorSheet(
                             Text(
                                 text = p.label,
                                 style = MaterialTheme.typography.labelMedium,
-                                color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (sel) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }

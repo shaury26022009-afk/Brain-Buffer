@@ -2,6 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Network access for optional Supabase authentication and cloud sync -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Tactile haptic feedback for focus start, completion, and distraction alerts -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- Runtime permission on Android 13+ (API 33+) for live timer & study reminders -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -12,12 +19,12 @@
     <!-- Strictly voluntary opt-in Do Not Disturb for Strict Focus Mode -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
-    <!-- Strictly optional, local-only Usage Access for activity suggestions -->
+    <!-- Strictly optional, local-only Usage Access for Phone Usage Analytics & Focus Guard -->
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- Narrow Play-Policy-compliant package visibility for Controlled Phone Access app picker -->
+    <!-- Narrow Play-Policy-compliant package visibility for Controlled Phone Access & Focus Guard -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -31,10 +38,21 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
     </queries>
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
@@ -54,7 +72,26 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Supabase email verification & password recovery deep-link callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="auth-callback"
+                    android:scheme="com.aistudio.brainbuffer.vkrqmx" />
+            </intent-filter>
         </activity>
+
+        <activity
+            android:name=".ui.FocusBlockedActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.MyApplication" />
 
         <service
             android:name=".service.FocusTimerService"

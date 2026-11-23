@@ -13,6 +13,7 @@ interface DndBackend {
     fun isPolicyAccessGranted(): Boolean
     fun getCurrentInterruptionFilter(): Int
     fun setInterruptionFilter(filter: Int)
+    fun configurePriorityPolicy(allowImportantCalls: Boolean, allowAlarms: Boolean) {}
 }
 
 class AndroidDndBackend(context: Context) : DndBackend {
@@ -36,6 +37,40 @@ class AndroidDndBackend(context: Context) : DndBackend {
             // Permission may have been revoked between check and call; degrade safely.
         }
     }
+
+    override fun configurePriorityPolicy(allowImportantCalls: Boolean, allowAlarms: Boolean) {
+        if (!isPolicyAccessGranted()) return
+        try {
+            val nm = notificationManager ?: return
+            val existing = nm.notificationPolicy
+            var categories = existing.priorityCategories
+            categories = if (allowAlarms) {
+                categories or NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS
+            } else {
+                categories and NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS.inv()
+            }
+            categories = if (allowImportantCalls) {
+                categories or NotificationManager.Policy.PRIORITY_CATEGORY_CALLS or
+                    NotificationManager.Policy.PRIORITY_CATEGORY_REPEAT_CALLERS
+            } else {
+                categories and NotificationManager.Policy.PRIORITY_CATEGORY_CALLS.inv()
+            }
+            val callSenders = if (allowImportantCalls) {
+                NotificationManager.Policy.PRIORITY_SENDERS_STARRED
+            } else {
+                existing.priorityCallSenders
+            }
+            val updatedPolicy = NotificationManager.Policy(
+                categories,
+                callSenders,
+                existing.priorityMessageSenders,
+                existing.suppressedVisualEffects
+            )
+            nm.setNotificationPolicy(updatedPolicy)
+        } catch (_: SecurityException) {
+            // Permission revoked mid-call; degrade safely.
+        }
+    }
 }
 
 /**
@@ -43,8 +78,9 @@ class AndroidDndBackend(context: Context) : DndBackend {
  *
  * Guarantees:
  * - Never changes DND unless the user explicitly granted Notification Policy access AND opted in.
- * - Uses [NotificationManager.INTERRUPTION_FILTER_PRIORITY] so alarms, emergency alerts,
- *   and starred/priority contacts remain reachable according to Android system settings.
+ * - Uses [NotificationManager.INTERRUPTION_FILTER_PRIORITY] and honors the user's
+ *   `allowImportantCalls` and `allowAlarms` preferences so emergency/starred contacts & alarms
+ *   stay reachable when enabled.
  * - Always captures the prior interruption filter before enabling, and restores it cleanly when
  *   the focus session ends or is cancelled.
  */
@@ -71,6 +107,8 @@ object DndFocusController {
     suspend fun enableFocusDndIfGranted(
         backend: DndBackend,
         alreadySavedFilter: Int = NO_SAVED_FILTER,
+        allowImportantCalls: Boolean = true,
+        allowAlarms: Boolean = true,
         savePreviousFilter: suspend (Int) -> Unit
     ): Boolean {
         if (!backend.isPolicyAccessGranted()) return false
@@ -78,6 +116,10 @@ object DndFocusController {
         if (alreadySavedFilter == NO_SAVED_FILTER) {
             savePreviousFilter(previous)
         }
+        backend.configurePriorityPolicy(
+            allowImportantCalls = allowImportantCalls,
+            allowAlarms = allowAlarms
+        )
         backend.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY)
         return true
     }

@@ -15,6 +15,8 @@ val LavenderLuminous = Color(0xFFB7A1F7)
 val LavenderSoft = Color(0xFFCBB8FA)
 val LavenderMist = Color(0xFFEDE7FF)
 val LavenderCloud = Color(0xFFF5F1FC)
+val BrandSuccess = Color(0xFF2FA687)
+val BrandWarmAmber = Color(0xFFF59E0B)
 
 // ============================================================================
 // Light Mode — Soft White Backgrounds & Very Light Lavender Surfaces
@@ -72,7 +74,7 @@ val AmoledElevatedHigh = Color(0xFF212128)
 val AmoledBorder = Color(0xFF26262C)
 val AmoledBorderSubtle = Color(0xFF1C1C21)
 val AmoledTextPrimary = Color(0xFFFFFFFF)
-val AmoledTextSecondary = Color(0xFFA1A1AA)
+val AmoledTextSecondary = Color(0xFFD2D2DE)
 
 val DarkBackground = AmoledBlack
 val DarkSurface = AmoledCard

@@ -52,6 +52,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.model.ActivityCategory
 import com.example.model.AppCategoryMapping
+import com.example.model.BlockedAppCategory
+import com.example.model.BlockedAppRule
 import com.example.model.FocusGuardLevel
 import com.example.model.FocusGuardPresetTemplates
 import com.example.model.FocusGuardSettings
@@ -61,6 +63,8 @@ import com.example.model.StudyActivityType
 import com.example.system.AppLauncherHelper
 import com.example.system.AppUsageAwarenessHelper
 import com.example.system.DndFocusController
+import com.example.system.InstalledAppChoice
+import com.example.system.PhoneUsageAnalyticsEngine
 import com.example.ui.theme.BrainBufferThemeTokens
 import com.example.ui.theme.JetBrainsMonoFamily
 
@@ -76,10 +80,14 @@ fun FocusGuardSettingsSheet(
     settings: FocusGuardSettings,
     appUsageAwarenessEnabled: Boolean,
     appCategoryMappings: List<AppCategoryMapping>,
+    blockedApps: List<BlockedAppRule> = emptyList(),
     onUpdateSettings: (FocusGuardSettings) -> Unit,
     onUpdateAppUsageAwareness: (Boolean) -> Unit,
     onUpsertAppMapping: (AppCategoryMapping) -> Unit,
     onDeleteAppMapping: (String) -> Unit,
+    onUpsertBlockedApp: (BlockedAppRule) -> Unit = {},
+    onDeleteBlockedApp: (String) -> Unit = {},
+    onToggleBlockedCategory: (BlockedAppCategory, List<InstalledAppChoice>, Boolean) -> Unit = { _, _, _ -> },
     onSaveStarterPreset: (StrictFocusPreset) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -94,10 +102,14 @@ fun FocusGuardSettingsSheet(
             settings = settings,
             appUsageAwarenessEnabled = appUsageAwarenessEnabled,
             appCategoryMappings = appCategoryMappings,
+            blockedApps = blockedApps,
             onUpdateSettings = onUpdateSettings,
             onUpdateAppUsageAwareness = onUpdateAppUsageAwareness,
             onUpsertAppMapping = onUpsertAppMapping,
             onDeleteAppMapping = onDeleteAppMapping,
+            onUpsertBlockedApp = onUpsertBlockedApp,
+            onDeleteBlockedApp = onDeleteBlockedApp,
+            onToggleBlockedCategory = onToggleBlockedCategory,
             onSaveStarterPreset = onSaveStarterPreset,
             onDismiss = onDismiss
         )
@@ -110,10 +122,14 @@ fun FocusGuardSettingsContent(
     settings: FocusGuardSettings,
     appUsageAwarenessEnabled: Boolean,
     appCategoryMappings: List<AppCategoryMapping>,
+    blockedApps: List<BlockedAppRule> = emptyList(),
     onUpdateSettings: (FocusGuardSettings) -> Unit,
     onUpdateAppUsageAwareness: (Boolean) -> Unit,
     onUpsertAppMapping: (AppCategoryMapping) -> Unit,
     onDeleteAppMapping: (String) -> Unit,
+    onUpsertBlockedApp: (BlockedAppRule) -> Unit = {},
+    onDeleteBlockedApp: (String) -> Unit = {},
+    onToggleBlockedCategory: (BlockedAppCategory, List<InstalledAppChoice>, Boolean) -> Unit = { _, _, _ -> },
     onSaveStarterPreset: (StrictFocusPreset) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -121,9 +137,10 @@ fun FocusGuardSettingsContent(
     val dndGranted = remember { DndFocusController.isAccessGranted(context) }
     val usageGranted = remember { AppUsageAwarenessHelper.hasUsageStatsPermission(context) }
     val installedApps = remember(appCategoryMappings) {
-        AppLauncherHelper.queryLaunchableApps(context, appCategoryMappings, limit = 30)
+        AppLauncherHelper.queryLaunchableApps(context, appCategoryMappings, limit = 40)
     }
     var showAppPicker by remember { mutableStateOf(false) }
+    var showBlocklistPicker by remember { mutableStateOf(false) }
     var selectedCategoryForNewApp by remember { mutableStateOf(StudyActivityType.STUDY_LECTURE) }
 
     Column(
@@ -566,6 +583,142 @@ fun FocusGuardSettingsContent(
                                     )
                                 },
                                 label = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider(color = BrainBufferThemeTokens.extended.cardBorder)
+
+        // Focus Guard Distracting App Blocklists (Categories + Per-App + Per-Mode Rules)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Distracting App Blocklists (${blockedApps.count { it.isBlocked }})",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Quick-guard categories or select individual installed apps per Focus mode",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(onClick = { showBlocklistPicker = !showBlocklistPicker }) {
+                    Text(if (showBlocklistPicker) "Hide Apps" else "Pick Apps")
+                }
+            }
+
+            // Suggested Category Quick Toggles
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                BlockedAppCategory.entries.forEach { cat ->
+                    val hasAnyInCat = blockedApps.any { it.category == cat && it.isBlocked }
+                    FilterChip(
+                        selected = hasAnyInCat,
+                        onClick = { onToggleBlockedCategory(cat, installedApps, !hasAnyInCat) },
+                        label = { Text(cat.label) },
+                        modifier = Modifier.testTag("blocklist_category_${cat.name.lowercase()}")
+                    )
+                }
+            }
+
+            // Individual Installed App Picker for Blocklist
+            if (showBlocklistPicker && installedApps.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    installedApps.forEach { app ->
+                        val existing = blockedApps.firstOrNull { it.packageName == app.packageName }
+                        val isBlocked = existing?.isBlocked == true
+                        FilterChip(
+                            selected = isBlocked,
+                            onClick = {
+                                if (isBlocked) {
+                                    onDeleteBlockedApp(app.packageName)
+                                } else {
+                                    onUpsertBlockedApp(
+                                        BlockedAppRule(
+                                            packageName = app.packageName,
+                                            appLabel = app.label,
+                                            category = PhoneUsageAnalyticsEngine.suggestBlockedCategory(app.packageName, app.label),
+                                            blockInNormal = false,
+                                            blockInHigh = true,
+                                            blockInCustom = true,
+                                            isBlocked = true
+                                        )
+                                    )
+                                }
+                            },
+                            label = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        )
+                    }
+                }
+            }
+
+            // Active Blocked Apps with Per-Mode Rule Chips (Normal / High / Custom)
+            blockedApps.take(12).forEach { rule ->
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, BrainBufferThemeTokens.extended.cardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = rule.appLabel,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = rule.category.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { onDeleteBlockedApp(rule.packageName) }) {
+                                Icon(
+                                    imageVector = Icons.Rounded.DeleteOutline,
+                                    contentDescription = "Remove ${rule.appLabel} from blocklist"
+                                )
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilterChip(
+                                selected = rule.blockInNormal,
+                                onClick = { onUpsertBlockedApp(rule.copy(blockInNormal = !rule.blockInNormal)) },
+                                label = { Text("Normal") }
+                            )
+                            FilterChip(
+                                selected = rule.blockInHigh,
+                                onClick = { onUpsertBlockedApp(rule.copy(blockInHigh = !rule.blockInHigh)) },
+                                label = { Text("High") }
+                            )
+                            FilterChip(
+                                selected = rule.blockInCustom,
+                                onClick = { onUpsertBlockedApp(rule.copy(blockInCustom = !rule.blockInCustom)) },
+                                label = { Text("Custom") }
                             )
                         }
                     }

@@ -1,27 +1,46 @@
 package com.example.data
 
+import android.content.Context
+import androidx.room.withTransaction
+import com.example.cloud.CloudSyncScheduler
+import com.example.cloud.SupabaseSyncManager
 import com.example.data.local.ActivityLogEntity
 import com.example.data.local.AppCategoryMappingEntity
+import com.example.data.local.BlockedAppEntity
 import com.example.data.local.BrainBufferDatabase
 import com.example.data.local.CustomActivityEntity
 import com.example.data.local.FocusSessionEntity
 import com.example.data.local.GardenPlantEntity
+import com.example.data.local.InterventionEventEntity
 import com.example.data.local.MindNoteEntity
+import com.example.data.local.PurposeSessionEntity
 import com.example.data.local.StrictFocusPresetEntity
+import com.example.data.local.StudyResourceEntity
+import com.example.data.local.StudySessionEntity
 import com.example.data.local.StudyTaskEntity
 import com.example.data.local.SubjectEntity
 import com.example.data.local.UserPreferencesStore
 import com.example.model.ActivityCategory
 import com.example.model.ActivityLogRecord
 import com.example.model.AppCategoryMapping
+import com.example.model.BlockedAppCategory
+import com.example.model.BlockedAppRule
+import com.example.model.BreakPlanMode
 import com.example.model.BreakPolicy
+import com.example.model.InterventionEventRecord
+import com.example.model.InterventionEventType
+import com.example.model.PurposeSessionRecord
+import com.example.model.SessionPurposeCategory
+import com.example.model.TemporaryAppAccessSession
 import com.example.model.CustomActivityOption
 import com.example.model.DailyActivityStat
+import com.example.model.FamilyControlSettings
 import com.example.model.FocusGuardSettings
 import com.example.model.FocusMode
 import com.example.model.FocusSessionRecord
 import com.example.model.GardenDecoration
 import com.example.model.GardenPlant
+import com.example.model.ManualBlockingSession
 import com.example.model.MindNote
 import com.example.model.MindNoteType
 import com.example.model.NotificationPreferences
@@ -33,12 +52,17 @@ import com.example.model.StrictFocusPreset
 import com.example.model.StrictnessLevel
 import com.example.model.StudyActivityType
 import com.example.model.StudyLevel
+import com.example.model.StudyResource
+import com.example.model.StudyResourceType
 import com.example.model.StudyTask
 import com.example.model.Subject
 import com.example.model.SubjectIcon
+import com.example.model.SupabaseAuthSession
 import com.example.model.TaskPriority
+import com.example.model.TemporaryAppAllowance
 import com.example.model.ThemeMode
 import com.example.model.UserPreferences
+import com.example.model.UserProfileRole
 import com.example.performance.PerformanceProfileOverride
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -48,7 +72,8 @@ import java.util.Locale
 
 class BrainBufferRepository(
     private val database: BrainBufferDatabase,
-    private val preferencesStore: UserPreferencesStore
+    private val preferencesStore: UserPreferencesStore,
+    private val appContext: Context? = null
 ) {
     private val subjectDao = database.subjectDao()
     private val taskDao = database.studyTaskDao()
@@ -59,9 +84,23 @@ class BrainBufferRepository(
     private val strictFocusPresetDao = database.strictFocusPresetDao()
     private val customActivityDao = database.customActivityDao()
     private val appCategoryMappingDao = database.appCategoryMappingDao()
+    private val studySessionDao = database.studySessionDao()
+    private val blockedAppDao = database.blockedAppDao()
+    private val studyResourceDao = database.studyResourceDao()
+    private val syncOutboxDao = database.syncOutboxDao()
+    private val purposeSessionDao = database.purposeSessionDao()
+    private val interventionEventDao = database.interventionEventDao()
+
+    val syncManager: SupabaseSyncManager = SupabaseSyncManager(database, preferencesStore)
 
     val preferences: Flow<UserPreferences> = preferencesStore.preferencesFlow
     val timerSnapshot: Flow<PersistedTimerSnapshot> = preferencesStore.timerSnapshotFlow
+    val activeTempAccess: Flow<TemporaryAppAccessSession?> = preferencesStore.activeTempAccessFlow
+    val manualBlockingSession: Flow<ManualBlockingSession> = preferencesStore.manualBlockingSessionFlow
+    val temporaryAllowances: Flow<List<TemporaryAppAllowance>> = preferencesStore.temporaryAllowancesFlow
+    val authSession: Flow<SupabaseAuthSession> = preferencesStore.authSessionFlow
+    val lastSyncedAtMs: Flow<Long> = preferencesStore.lastSyncedAtMsFlow
+    val pendingOutboxCount: Flow<Int> = syncOutboxDao.observePendingCount()
 
     val subjects: Flow<List<Subject>> = subjectDao.observeAll().map { rows ->
         rows.map { it.toDomain() }
@@ -99,6 +138,44 @@ class BrainBufferRepository(
         rows.map { it.toDomain() }
     }
 
+    val blockedApps: Flow<List<BlockedAppRule>> = blockedAppDao.observeAll().map { rows ->
+        rows.map { it.toDomain() }
+    }
+
+    val studyResources: Flow<List<StudyResource>> = studyResourceDao.observeAll().map { rows ->
+        rows.map { it.toDomain() }
+    }
+
+    val purposeSessions: Flow<List<PurposeSessionRecord>> = purposeSessionDao.observeAll().map { rows ->
+        rows.map { it.toDomain() }
+    }
+
+    val interventionEvents: Flow<List<InterventionEventRecord>> = interventionEventDao.observeAll().map { rows ->
+        rows.map { it.toDomain() }
+    }
+
+    suspend fun getActiveTempAccessOnce(): TemporaryAppAccessSession? = preferencesStore.getActiveTempAccessOnce()
+
+    suspend fun saveActiveTempAccess(session: TemporaryAppAccessSession?) {
+        preferencesStore.saveActiveTempAccess(session)
+    }
+
+    suspend fun hasPurposeSession(sessionKey: String): Boolean {
+        if (sessionKey.isBlank()) return false
+        return purposeSessionDao.countBySessionKey(sessionKey) > 0
+    }
+
+    suspend fun savePurposeSession(record: PurposeSessionRecord): Long {
+        if (record.sessionKey.isNotBlank() && purposeSessionDao.countBySessionKey(record.sessionKey) > 0) {
+            return purposeSessionDao.upsert(record.toEntity())
+        }
+        return purposeSessionDao.upsert(record.toEntity())
+    }
+
+    suspend fun logInterventionEvent(event: InterventionEventRecord): Long {
+        return interventionEventDao.insert(event.toEntity())
+    }
+
     // region Onboarding & Preferences
 
     suspend fun completeOnboarding(
@@ -133,28 +210,108 @@ class BrainBufferRepository(
             dailyTargetMinutes = dailyTargetMinutes
         )
 
-        // Sync subjects entered during onboarding (preserve existing if re-running onboarding)
-        val existingSubjects = subjectDao.getAllOnce()
-        val existingNames = existingSubjects.map { it.name.lowercase() }.toSet()
-        initialSubjects.forEach { subject ->
-            if (subject.name.isNotBlank() && subject.name.lowercase() !in existingNames) {
-                subjectDao.insert(subject.toEntity())
+        // Sync subjects and starter dormant seed atomically (preserve existing data)
+        database.withTransaction {
+            val existingSubjects = subjectDao.getAllOnce()
+            val existingNames = existingSubjects.map { it.name.lowercase() }.toSet()
+            initialSubjects.forEach { subject ->
+                if (subject.name.isNotBlank() && subject.name.lowercase() !in existingNames) {
+                    subjectDao.insert(subject.toEntity())
+                }
+            }
+
+            // Plant a single starter dormant seed (0 sessions, 0 fake minutes) if garden is empty
+            if (plantDao.getAllOnce().isEmpty()) {
+                plantDao.insert(
+                    GardenPlantEntity(
+                        species = PlantSpecies.LAVENDER_SPIRE.name,
+                        nickname = "First Sprout",
+                        sessionsLogged = 0,
+                        totalMinutes = 0,
+                        plantedDateEpochDay = LocalDate.now().toEpochDay(),
+                        isActive = true
+                    )
+                )
             }
         }
+    }
 
-        // Plant a single starter dormant seed (0 sessions, 0 fake minutes) if garden is empty
-        if (plantDao.getAllOnce().isEmpty()) {
-            plantDao.insert(
-                GardenPlantEntity(
-                    species = PlantSpecies.LAVENDER_SPIRE.name,
-                    nickname = "First Sprout",
-                    sessionsLogged = 0,
-                    totalMinutes = 0,
-                    plantedDateEpochDay = LocalDate.now().toEpochDay(),
-                    isActive = true
+    suspend fun saveOnboardingCurrentStep(step: Int) {
+        preferencesStore.saveOnboardingCurrentStep(step)
+    }
+
+    suspend fun completeFullOnboarding(
+        userRole: UserProfileRole,
+        studentName: String,
+        avatarKey: String,
+        studyLevel: StudyLevel,
+        courseOrExamName: String,
+        initialSubjects: List<Subject>,
+        studyGoals: Set<String>,
+        customGoal: String,
+        preferredFocusMinutes: Int,
+        shortBreakMinutes: Int,
+        longBreakMinutes: Int,
+        preferredStudyTime: PreferredStudyTime,
+        weeklyStudyDaysTarget: Int,
+        biggestDistractions: Set<String>,
+        otherDistraction: String,
+        dailyTargetMinutes: Int,
+        focusGuardSettings: FocusGuardSettings,
+        notificationPrefs: NotificationPreferences,
+        selectedBlockedApps: List<BlockedAppRule>,
+        appUsageAwarenessEnabled: Boolean
+    ) {
+        preferencesStore.saveFullOnboardingPreferences(
+            userRole = userRole,
+            studentName = studentName,
+            avatarKey = avatarKey,
+            studyLevel = studyLevel,
+            courseOrExamName = courseOrExamName,
+            studyGoals = studyGoals,
+            customGoal = customGoal,
+            preferredFocusMinutes = preferredFocusMinutes,
+            shortBreakMinutes = shortBreakMinutes,
+            longBreakMinutes = longBreakMinutes,
+            preferredStudyTime = preferredStudyTime,
+            weeklyStudyDaysTarget = weeklyStudyDaysTarget,
+            biggestDistractions = biggestDistractions,
+            otherDistraction = otherDistraction,
+            dailyTargetMinutes = dailyTargetMinutes,
+            focusGuardSettings = focusGuardSettings,
+            notificationPrefs = notificationPrefs,
+            appUsageAwarenessEnabled = appUsageAwarenessEnabled
+        )
+
+        database.withTransaction {
+            val existingSubjects = subjectDao.getAllOnce()
+            val existingNames = existingSubjects.map { it.name.lowercase() }.toSet()
+            initialSubjects.forEach { subject ->
+                if (subject.name.isNotBlank() && subject.name.lowercase() !in existingNames) {
+                    subjectDao.insert(subject.toEntity())
+                }
+            }
+
+            selectedBlockedApps.forEach { rule ->
+                if (rule.packageName.isNotBlank()) {
+                    blockedAppDao.upsert(rule.toEntity())
+                }
+            }
+
+            if (plantDao.getAllOnce().isEmpty()) {
+                plantDao.insert(
+                    GardenPlantEntity(
+                        species = PlantSpecies.LAVENDER_SPIRE.name,
+                        nickname = "First Sprout",
+                        sessionsLogged = 0,
+                        totalMinutes = 0,
+                        plantedDateEpochDay = LocalDate.now().toEpochDay(),
+                        isActive = true
+                    )
                 )
-            )
+            }
         }
+        scheduleCloudSyncIfSignedIn()
     }
 
     suspend fun updateProfile(
@@ -181,6 +338,7 @@ class BrainBufferRepository(
             biggestDistractions = biggestDistractions,
             otherDistraction = otherDistraction
         )
+        scheduleCloudSyncIfSignedIn()
     }
 
     suspend fun updateTimerAndTargetPrefs(
@@ -195,15 +353,23 @@ class BrainBufferRepository(
             longBreakMinutes = longBreakMinutes,
             dailyTargetMinutes = dailyTargetMinutes
         )
+        scheduleCloudSyncIfSignedIn()
     }
 
-    suspend fun updateThemeMode(mode: ThemeMode) = preferencesStore.updateThemeMode(mode)
+    suspend fun updateThemeMode(mode: ThemeMode) {
+        preferencesStore.updateThemeMode(mode)
+        scheduleCloudSyncIfSignedIn()
+    }
 
-    suspend fun updatePerformanceOverride(override: PerformanceProfileOverride) =
+    suspend fun updatePerformanceOverride(override: PerformanceProfileOverride) {
         preferencesStore.updatePerformanceOverride(override)
+        scheduleCloudSyncIfSignedIn()
+    }
 
-    suspend fun updateNotificationPreferences(notificationPrefs: NotificationPreferences) =
+    suspend fun updateNotificationPreferences(notificationPrefs: NotificationPreferences) {
         preferencesStore.updateNotificationPreferences(notificationPrefs)
+        scheduleCloudSyncIfSignedIn()
+    }
 
     suspend fun updateAppUsageAwareness(enabled: Boolean) =
         preferencesStore.updateAppUsageAwareness(enabled)
@@ -214,8 +380,10 @@ class BrainBufferRepository(
     suspend fun updateSavedDndInterruptionFilter(filter: Int) =
         preferencesStore.updateSavedDndInterruptionFilter(filter)
 
-    suspend fun updateFocusGuardSettings(settings: FocusGuardSettings) =
+    suspend fun updateFocusGuardSettings(settings: FocusGuardSettings) {
         preferencesStore.updateFocusGuardSettings(settings)
+        scheduleCloudSyncIfSignedIn()
+    }
 
     suspend fun recordDistractionWarning(todayEpochDay: Long = LocalDate.now().toEpochDay()) =
         preferencesStore.recordDistractionWarning(todayEpochDay)
@@ -228,6 +396,31 @@ class BrainBufferRepository(
 
     suspend fun getAppCategoryMappingsOnce(): List<AppCategoryMapping> =
         appCategoryMappingDao.getAllOnce().map { it.toDomain() }
+
+    suspend fun getBlockedAppsOnce(): List<BlockedAppRule> =
+        blockedAppDao.getAllOnce().map { it.toDomain() }
+
+    suspend fun updateCloudUsageSummarySyncEnabled(enabled: Boolean) {
+        preferencesStore.updateCloudUsageSummarySyncEnabled(enabled)
+        scheduleCloudSyncIfSignedIn()
+    }
+
+    suspend fun updateFamilyControlSettings(settings: FamilyControlSettings) {
+        preferencesStore.updateFamilyControlSettings(settings)
+        scheduleCloudSyncIfSignedIn()
+    }
+
+    suspend fun saveAuthSession(session: SupabaseAuthSession) =
+        preferencesStore.saveAuthSession(session)
+
+    suspend fun clearAuthSession() = preferencesStore.clearAuthSession()
+
+    suspend fun getAuthSessionOnce(): SupabaseAuthSession = preferencesStore.getAuthSessionOnce()
+
+    suspend fun updateActiveAccountOwnerId(ownerId: String) =
+        preferencesStore.updateActiveAccountOwnerId(ownerId)
+
+    suspend fun updateLastSyncedAtMs(ms: Long) = preferencesStore.updateLastSyncedAtMs(ms)
 
     suspend fun updateAppSettings(
         notificationsEnabled: Boolean,
@@ -253,22 +446,52 @@ class BrainBufferRepository(
         preferencesStore.saveTimerSnapshot(snapshot)
     }
 
+    suspend fun getManualBlockingSessionOnce(): ManualBlockingSession =
+        preferencesStore.getManualBlockingSessionOnce()
+
+    suspend fun saveManualBlockingSession(session: ManualBlockingSession) {
+        preferencesStore.saveManualBlockingSession(session)
+    }
+
+    suspend fun getTemporaryAllowancesOnce(): List<TemporaryAppAllowance> =
+        preferencesStore.getTemporaryAllowancesOnce()
+
+    suspend fun saveTemporaryAllowances(allowances: List<TemporaryAppAllowance>) {
+        preferencesStore.saveTemporaryAllowances(allowances)
+    }
+
     // endregion
 
     // region Subjects CRUD
 
     suspend fun upsertSubject(subject: Subject): Long {
-        return if (subject.id == 0L) {
+        val savedId = if (subject.id == 0L) {
             subjectDao.insert(subject.toEntity())
         } else {
             subjectDao.update(subject.toEntity())
             subject.id
         }
+        enqueueIfSignedIn(
+            entityType = "subjects",
+            localKey = savedId.toString(),
+            payload = org.json.JSONObject().apply {
+                put("local_id", savedId)
+                put("name", subject.name)
+                put("color_hex", subject.colorHex)
+                put("icon_key", subject.iconKey)
+                put("target_hours_per_week", subject.targetHoursPerWeek.toDouble())
+                if (subject.examDateEpochDay != null) put("exam_date_epoch_day", subject.examDateEpochDay) else put("exam_date_epoch_day", org.json.JSONObject.NULL)
+            }
+        )
+        return savedId
     }
 
     suspend fun deleteSubject(subjectId: Long) {
-        taskDao.clearSubjectReference(subjectId)
-        subjectDao.deleteById(subjectId)
+        database.withTransaction {
+            taskDao.clearSubjectReference(subjectId)
+            subjectDao.deleteById(subjectId)
+        }
+        enqueueDeleteIfSignedIn("subjects", subjectId.toString())
     }
 
     // endregion
@@ -276,16 +499,110 @@ class BrainBufferRepository(
     // region Study Tasks CRUD
 
     suspend fun upsertTask(task: StudyTask): Long {
-        return if (task.id == 0L) {
+        val savedId = if (task.id == 0L) {
             taskDao.insert(task.toEntity())
         } else {
             taskDao.update(task.toEntity())
             task.id
         }
+        enqueueIfSignedIn(
+            entityType = "planner_tasks",
+            localKey = savedId.toString(),
+            payload = org.json.JSONObject().apply {
+                put("local_id", savedId)
+                if (task.subjectId != null) put("subject_local_id", task.subjectId) else put("subject_local_id", org.json.JSONObject.NULL)
+                put("title", task.title)
+                put("due_date_epoch_day", task.dueDateEpochDay)
+                put("due_time_label", task.dueTimeLabel)
+                put("estimated_minutes", task.estimatedMinutes)
+                put("priority", task.priority.name)
+                put("is_completed", task.isCompleted)
+                if (task.completedAtMs != null) put("completed_at_ms", task.completedAtMs) else put("completed_at_ms", org.json.JSONObject.NULL)
+                put("notes", task.notes)
+            }
+        )
+        return savedId
     }
 
     suspend fun deleteTask(taskId: Long) {
         taskDao.deleteById(taskId)
+        enqueueDeleteIfSignedIn("planner_tasks", taskId.toString())
+    }
+
+    // endregion
+
+    // region Focus Guard Blocklists & Study-Only YouTube Resources
+
+    suspend fun upsertBlockedApp(rule: BlockedAppRule) {
+        blockedAppDao.upsert(rule.toEntity())
+        enqueueIfSignedIn(
+            entityType = "blocked_apps",
+            localKey = rule.packageName,
+            payload = org.json.JSONObject().apply {
+                put("package_name", rule.packageName)
+                put("app_label", rule.appLabel)
+                put("category", rule.category.name)
+                put("block_in_normal", rule.blockInNormal)
+                put("block_in_high", rule.blockInHigh)
+                put("block_in_custom", rule.blockInCustom)
+                put("is_blocked", rule.isBlocked)
+            }
+        )
+    }
+
+    suspend fun deleteBlockedApp(packageName: String) {
+        blockedAppDao.deleteByPackage(packageName)
+        enqueueDeleteIfSignedIn("blocked_apps", packageName)
+    }
+
+    suspend fun addStudyResource(resource: StudyResource): Long {
+        val savedId = studyResourceDao.insert(resource.toEntity())
+        enqueueIfSignedIn(
+            entityType = "study_resources",
+            localKey = savedId.toString(),
+            payload = org.json.JSONObject().apply {
+                put("local_id", savedId)
+                if (resource.subjectId != null) put("subject_local_id", resource.subjectId) else put("subject_local_id", org.json.JSONObject.NULL)
+                put("title", resource.title)
+                put("url", resource.url)
+                put("resource_type", resource.resourceType.name)
+                put("channel_name", resource.channelName)
+                put("last_opened_at_ms", resource.lastOpenedAtMs)
+            }
+        )
+        return savedId
+    }
+
+    suspend fun markStudyResourceOpened(id: Long) {
+        studyResourceDao.markOpened(id, System.currentTimeMillis())
+    }
+
+    suspend fun deleteStudyResource(id: Long) {
+        studyResourceDao.deleteById(id)
+        enqueueDeleteIfSignedIn("study_resources", id.toString())
+    }
+
+    private suspend fun enqueueIfSignedIn(entityType: String, localKey: String, payload: org.json.JSONObject) {
+        val session = preferencesStore.getAuthSessionOnce()
+        if (session.isSignedIn) {
+            syncManager.enqueueUpsert(entityType, localKey, payload)
+            appContext?.let { CloudSyncScheduler.scheduleSync(it) }
+        }
+    }
+
+    private suspend fun enqueueDeleteIfSignedIn(entityType: String, localKey: String) {
+        val session = preferencesStore.getAuthSessionOnce()
+        if (session.isSignedIn) {
+            syncManager.enqueueDelete(entityType, localKey)
+            appContext?.let { CloudSyncScheduler.scheduleSync(it) }
+        }
+    }
+
+    private suspend fun scheduleCloudSyncIfSignedIn() {
+        val ctx = appContext ?: return
+        if (preferencesStore.getAuthSessionOnce().isSignedIn) {
+            CloudSyncScheduler.scheduleSync(ctx)
+        }
     }
 
     // endregion
@@ -299,34 +616,29 @@ class BrainBufferRepository(
         existingDecorations: Set<String>,
         sessionKey: String = ""
     ): Pair<GardenPlant, GardenDecoration?> {
-        if (sessionKey.isNotBlank() && sessionDao.countBySessionKey(sessionKey) > 0) {
-            val plants = plantDao.getAllOnce()
-            val active = plants.firstOrNull { it.isActive } ?: plants.firstOrNull()
-            return (active?.toDomain() ?: GardenPlant(
-                species = PlantSpecies.LAVENDER_SPIRE,
-                nickname = "First Sprout",
-                isActive = true
-            )) to null
+        val effectiveSessionKey = sessionKey.ifBlank {
+            "local_${session.completedAtMs}_${session.durationSeconds}"
         }
-
-        sessionDao.insert(session.toEntity(sessionKey = sessionKey))
-
-        var plants = plantDao.getAllOnce()
-        if (plants.isEmpty()) {
-            val id = plantDao.insert(
-                GardenPlantEntity(
+        val (updatedActive, wasDuplicate) = database.withTransaction {
+            if (sessionKey.isNotBlank() && sessionDao.countBySessionKey(sessionKey) > 0) {
+                val plants = plantDao.getAllOnce()
+                val active = plants.firstOrNull { it.isActive } ?: plants.firstOrNull()
+                return@withTransaction (active ?: GardenPlantEntity(
                     species = PlantSpecies.LAVENDER_SPIRE.name,
                     nickname = "First Sprout",
                     sessionsLogged = 0,
                     totalMinutes = 0,
                     plantedDateEpochDay = LocalDate.now().toEpochDay(),
                     isActive = true
-                )
-            )
-            plants = plantDao.getAllOnce().ifEmpty {
-                listOf(
+                )) to true
+            }
+
+            sessionDao.insert(session.toEntity(sessionKey = effectiveSessionKey))
+
+            var plants = plantDao.getAllOnce()
+            if (plants.isEmpty()) {
+                val id = plantDao.insert(
                     GardenPlantEntity(
-                        id = id,
                         species = PlantSpecies.LAVENDER_SPIRE.name,
                         nickname = "First Sprout",
                         sessionsLogged = 0,
@@ -335,15 +647,50 @@ class BrainBufferRepository(
                         isActive = true
                     )
                 )
+                plants = plantDao.getAllOnce().ifEmpty {
+                    listOf(
+                        GardenPlantEntity(
+                            id = id,
+                            species = PlantSpecies.LAVENDER_SPIRE.name,
+                            nickname = "First Sprout",
+                            sessionsLogged = 0,
+                            totalMinutes = 0,
+                            plantedDateEpochDay = LocalDate.now().toEpochDay(),
+                            isActive = true
+                        )
+                    )
+                }
             }
+
+            val activeEntity = plants.firstOrNull { it.isActive } ?: plants.first()
+            val grown = activeEntity.copy(
+                sessionsLogged = activeEntity.sessionsLogged + 1,
+                totalMinutes = activeEntity.totalMinutes + session.durationMinutes
+            )
+            plantDao.update(grown)
+            grown to false
         }
 
-        val activeEntity = plants.firstOrNull { it.isActive } ?: plants.first()
-        val updatedActive = activeEntity.copy(
-            sessionsLogged = activeEntity.sessionsLogged + 1,
-            totalMinutes = activeEntity.totalMinutes + session.durationMinutes
+        if (wasDuplicate) {
+            return updatedActive.toDomain() to null
+        }
+
+        enqueueIfSignedIn(
+            entityType = "focus_sessions",
+            localKey = effectiveSessionKey,
+            payload = org.json.JSONObject().apply {
+                put("session_key", effectiveSessionKey)
+                if (session.subjectId != null) put("subject_local_id", session.subjectId) else put("subject_local_id", org.json.JSONObject.NULL)
+                put("subject_name", session.subjectName)
+                put("subject_color_hex", session.subjectColorHex)
+                put("duration_seconds", session.durationSeconds)
+                put("planned_seconds", session.plannedSeconds)
+                put("session_goal", session.sessionGoal)
+                put("mode", session.mode.name)
+                put("completed_at_ms", session.completedAtMs)
+                put("date_epoch_day", session.dateEpochDay)
+            }
         )
-        plantDao.update(updatedActive)
 
         val updatedSessions = listOf(session) + allExistingSessions
         val todayMinutes = updatedSessions
@@ -384,17 +731,19 @@ class BrainBufferRepository(
     }
 
     suspend fun plantNewSeed(species: PlantSpecies, nickname: String, spendSeed: Boolean): Boolean {
-        val insertedId = plantDao.insert(
-            GardenPlantEntity(
-                species = species.name,
-                nickname = nickname.trim().ifBlank { species.displayName },
-                sessionsLogged = 0,
-                totalMinutes = 0,
-                plantedDateEpochDay = LocalDate.now().toEpochDay(),
-                isActive = true
+        database.withTransaction {
+            val insertedId = plantDao.insert(
+                GardenPlantEntity(
+                    species = species.name,
+                    nickname = nickname.trim().ifBlank { species.displayName },
+                    sessionsLogged = 0,
+                    totalMinutes = 0,
+                    plantedDateEpochDay = LocalDate.now().toEpochDay(),
+                    isActive = true
+                )
             )
-        )
-        plantDao.setActivePlant(insertedId)
+            plantDao.setActivePlant(insertedId)
+        }
         if (spendSeed) {
             preferencesStore.updateGardenRewards(seedsDelta = -1)
         }
@@ -402,14 +751,18 @@ class BrainBufferRepository(
     }
 
     suspend fun nurtureActivePlantWithSeed(): Boolean {
-        val plants = plantDao.getAllOnce()
-        val active = plants.firstOrNull { it.isActive } ?: return false
-        plantDao.update(
-            active.copy(
-                sessionsLogged = active.sessionsLogged + 1,
-                totalMinutes = active.totalMinutes + 10
+        val nurtured = database.withTransaction {
+            val plants = plantDao.getAllOnce()
+            val active = plants.firstOrNull { it.isActive } ?: return@withTransaction false
+            plantDao.update(
+                active.copy(
+                    sessionsLogged = active.sessionsLogged + 1,
+                    totalMinutes = active.totalMinutes + 10
+                )
             )
-        )
+            true
+        }
+        if (!nurtured) return false
         preferencesStore.updateGardenRewards(seedsDelta = -1)
         return true
     }
@@ -484,21 +837,178 @@ class BrainBufferRepository(
         appCategoryMappingDao.deleteByPackage(packageName)
     }
 
+    suspend fun upsertStudySession(
+        sessionKey: String,
+        subjectId: Long?,
+        subjectName: String,
+        startTimeMs: Long,
+        endTimeMs: Long?,
+        totalDurationSeconds: Int,
+        plannedDurationSeconds: Int,
+        sessionStatus: String,
+        focusGuardLevel: String,
+        activityType: String
+    ) {
+        if (sessionKey.isBlank()) return
+        val existing = studySessionDao.getBySessionKey(sessionKey)
+        studySessionDao.upsert(
+            StudySessionEntity(
+                id = existing?.id ?: 0L,
+                sessionKey = sessionKey,
+                subjectId = subjectId,
+                subjectName = subjectName,
+                startTimeMs = existing?.startTimeMs ?: startTimeMs,
+                endTimeMs = endTimeMs,
+                totalDurationSeconds = totalDurationSeconds.coerceAtLeast(0),
+                plannedDurationSeconds = plannedDurationSeconds.coerceAtLeast(1),
+                sessionStatus = sessionStatus,
+                focusGuardLevel = focusGuardLevel,
+                activityType = activityType,
+                updatedAtMs = System.currentTimeMillis()
+            )
+        )
+    }
+
+    /**
+     * Offline JSON restore for backups generated by [BrainBufferViewModel.buildStudyBackupJson].
+     * Non-destructive: merges new subjects & tasks while skipping case-insensitive duplicates.
+     */
+    suspend fun importStudyBackupJson(json: String): Result<Int> {
+        val trimmed = json.trim()
+        if (trimmed.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Backup JSON is empty."))
+        }
+        return runCatching {
+            val root = org.json.JSONObject(trimmed)
+            val appName = root.optString("app", "")
+            if (appName.isNotBlank() && !appName.equals("Brain Buffer", ignoreCase = true)) {
+                throw IllegalArgumentException("Unrecognized backup format.")
+            }
+
+            var restoredCount = 0
+            val defaultSubjectColors = listOf(0xFF7B5CFA, 0xFF10B981, 0xFF3B82F6, 0xFFF59E0B, 0xFFEC4899)
+            val todayEpoch = LocalDate.now().toEpochDay()
+
+            database.withTransaction {
+                val existingSubjectNames = subjectDao.getAllOnce()
+                    .map { it.name.trim().lowercase(Locale.ROOT) }
+                    .toMutableSet()
+
+                val subjectsArray = root.optJSONArray("subjects")
+                if (subjectsArray != null) {
+                    for (i in 0 until subjectsArray.length()) {
+                        val obj = subjectsArray.optJSONObject(i) ?: continue
+                        val name = obj.optString("name", "").trim()
+                        if (name.isEmpty()) continue
+                        val key = name.lowercase(Locale.ROOT)
+                        if (key in existingSubjectNames) continue
+                        val targetHours = obj.optDouble("targetHoursPerWeek", 4.0).toFloat().coerceIn(1f, 40f)
+                        subjectDao.insert(
+                            SubjectEntity(
+                                name = name.take(40),
+                                colorHex = defaultSubjectColors[i % defaultSubjectColors.size],
+                                iconKey = SubjectIcon.BOOK.key,
+                                targetHoursPerWeek = targetHours,
+                                examDateEpochDay = null
+                            )
+                        )
+                        existingSubjectNames.add(key)
+                        restoredCount++
+                    }
+                }
+
+                val existingTaskTitles = taskDao.getAllOnce()
+                    .map { it.title.trim().lowercase(Locale.ROOT) }
+                    .toMutableSet()
+
+                val tasksArray = root.optJSONArray("tasks")
+                if (tasksArray != null) {
+                    for (i in 0 until tasksArray.length()) {
+                        val obj = tasksArray.optJSONObject(i) ?: continue
+                        val title = obj.optString("title", "").trim()
+                        if (title.isEmpty()) continue
+                        val key = title.lowercase(Locale.ROOT)
+                        if (key in existingTaskTitles) continue
+                        val dueTime = obj.optString("dueTime", "6:00 PM").ifBlank { "6:00 PM" }
+                        val estimatedMinutes = obj.optInt("estimatedMinutes", 30).coerceIn(5, 240)
+                        val priorityLabel = obj.optString("priority", "Medium")
+                        val priority = TaskPriority.entries.firstOrNull {
+                            it.label.equals(priorityLabel, ignoreCase = true) ||
+                                it.name.equals(priorityLabel, ignoreCase = true)
+                        } ?: TaskPriority.MEDIUM
+                        val completed = obj.optBoolean("completed", false)
+                        taskDao.insert(
+                            StudyTaskEntity(
+                                title = title.take(120),
+                                subjectId = null,
+                                dueDateEpochDay = todayEpoch,
+                                dueTimeLabel = dueTime,
+                                estimatedMinutes = estimatedMinutes,
+                                priority = priority.name,
+                                isCompleted = completed,
+                                completedAtMs = if (completed) System.currentTimeMillis() else null,
+                                notes = ""
+                            )
+                        )
+                        existingTaskTitles.add(key)
+                        restoredCount++
+                    }
+                }
+            }
+
+            val profileObj = root.optJSONObject("profile")
+            if (profileObj != null && profileObj.has("dailyTargetMinutes")) {
+                val currentPrefs = preferencesStore.getPreferencesOnce()
+                val importedTarget = profileObj.optInt("dailyTargetMinutes", currentPrefs.dailyTargetMinutes)
+                    .coerceIn(15, 600)
+                if (importedTarget != currentPrefs.dailyTargetMinutes) {
+                    preferencesStore.updateTimerAndTargetPrefs(
+                        preferredFocusMinutes = currentPrefs.preferredFocusMinutes,
+                        shortBreakMinutes = currentPrefs.shortBreakMinutes,
+                        longBreakMinutes = currentPrefs.longBreakMinutes,
+                        dailyTargetMinutes = importedTarget
+                    )
+                    restoredCount++
+                }
+            }
+
+            restoredCount
+        }
+    }
+
     // endregion
 
     // region Data Management (Clear All + Explicit Opt-In Demo Preview Mode)
 
     suspend fun clearAllStudyData() {
-        taskDao.deleteAll()
-        sessionDao.deleteAll()
-        activityLogDao.deleteAll()
-        strictFocusPresetDao.deleteAll()
-        customActivityDao.deleteAll()
-        appCategoryMappingDao.deleteAll()
-        plantDao.deleteAll()
-        mindNoteDao.deleteAll()
-        subjectDao.deleteAll()
+        database.withTransaction {
+            taskDao.deleteAll()
+            sessionDao.deleteAll()
+            studySessionDao.deleteAll()
+            activityLogDao.deleteAll()
+            strictFocusPresetDao.deleteAll()
+            customActivityDao.deleteAll()
+            appCategoryMappingDao.deleteAll()
+            blockedAppDao.deleteAll()
+            studyResourceDao.deleteAll()
+            syncOutboxDao.deleteAll()
+            plantDao.deleteAll()
+            mindNoteDao.deleteAll()
+            subjectDao.deleteAll()
+            purposeSessionDao.deleteAll()
+            interventionEventDao.deleteAll()
+        }
+        preferencesStore.saveActiveTempAccess(null)
         preferencesStore.resetStudyRewardsOnly()
+    }
+
+    /**
+     * Account isolation: clears local private tables when signing out or switching accounts
+     * so Account A's records never leak into Account B on the same device. Cloud data is untouched.
+     */
+    suspend fun clearLocalTablesForAccountSwitch() {
+        clearAllStudyData()
+        preferencesStore.resetAccountScopedPreferencesForSwitch()
     }
 
     /**
@@ -610,6 +1120,20 @@ class BrainBufferRepository(
     // endregion
 
     companion object {
+        @Volatile
+        private var INSTANCE: BrainBufferRepository? = null
+
+        fun getInstance(context: Context): BrainBufferRepository {
+            return INSTANCE ?: synchronized(this) {
+                val appContext = context.applicationContext
+                INSTANCE ?: BrainBufferRepository(
+                    database = BrainBufferDatabase.getInstance(appContext),
+                    preferencesStore = UserPreferencesStore(appContext),
+                    appContext = appContext
+                ).also { INSTANCE = it }
+            }
+        }
+
         val motivationalNotes = listOf(
             "Small, calm focus blocks beat hours of stressed multitasking.",
             "Make space for one meaningful thing right now—the rest can wait.",
@@ -902,3 +1426,121 @@ private fun AppCategoryMapping.toEntity() = AppCategoryMappingEntity(
     isAllowedDuringFocus = isAllowedDuringFocus,
     updatedAtMs = updatedAtMs
 )
+
+private fun BlockedAppEntity.toDomain() = BlockedAppRule(
+    packageName = packageName,
+    appLabel = appLabel,
+    category = BlockedAppCategory.entries.firstOrNull { it.name == category } ?: BlockedAppCategory.OTHER,
+    blockInNormal = blockInNormal,
+    blockInHigh = blockInHigh,
+    blockInCustom = blockInCustom,
+    isBlocked = isBlocked,
+    updatedAtMs = updatedAtMs
+)
+
+private fun BlockedAppRule.toEntity() = BlockedAppEntity(
+    packageName = packageName,
+    appLabel = appLabel,
+    category = category.name,
+    blockInNormal = blockInNormal,
+    blockInHigh = blockInHigh,
+    blockInCustom = blockInCustom,
+    isBlocked = isBlocked,
+    updatedAtMs = updatedAtMs
+)
+
+private fun StudyResourceEntity.toDomain() = StudyResource(
+    id = id,
+    subjectId = subjectId,
+    title = title,
+    url = url,
+    resourceType = StudyResourceType.entries.firstOrNull { it.name == resourceType } ?: StudyResourceType.VIDEO,
+    channelName = channelName,
+    lastOpenedAtMs = lastOpenedAtMs,
+    createdAtMs = createdAtMs
+)
+
+private fun StudyResource.toEntity() = StudyResourceEntity(
+    id = id,
+    subjectId = subjectId,
+    title = title,
+    url = url,
+    resourceType = resourceType.name,
+    channelName = channelName,
+    lastOpenedAtMs = lastOpenedAtMs,
+    createdAtMs = createdAtMs
+)
+
+private fun PurposeSessionEntity.toDomain() = PurposeSessionRecord(
+    id = id,
+    sessionKey = sessionKey,
+    purposeCategory = SessionPurposeCategory.fromKey(purposeCategory),
+    sessionName = sessionName,
+    allowedPackages = allowedPackagesCsv.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+    allowedAppLabels = allowedAppLabelsCsv.split("||").map { it.trim() }.filter { it.isNotEmpty() },
+    plannedSeconds = plannedSeconds,
+    actualFocusedSeconds = actualFocusedSeconds,
+    breakSeconds = breakSeconds,
+    temporaryAccessSeconds = temporaryAccessSeconds,
+    distractionSeconds = distractionSeconds,
+    interventionCount = interventionCount,
+    status = status,
+    breakPlanMode = BreakPlanMode.fromKey(breakPlanMode),
+    linkedTaskId = linkedTaskId,
+    startedAtMs = startedAtMs,
+    endedAtMs = endedAtMs,
+    dateEpochDay = dateEpochDay
+)
+
+private fun PurposeSessionRecord.toEntity() = PurposeSessionEntity(
+    id = id,
+    sessionKey = sessionKey,
+    purposeCategory = purposeCategory.name,
+    sessionName = sessionName,
+    allowedPackagesCsv = allowedPackages.joinToString(","),
+    allowedAppLabelsCsv = allowedAppLabels.joinToString("||"),
+    plannedSeconds = plannedSeconds,
+    actualFocusedSeconds = actualFocusedSeconds,
+    breakSeconds = breakSeconds,
+    temporaryAccessSeconds = temporaryAccessSeconds,
+    distractionSeconds = distractionSeconds,
+    interventionCount = interventionCount,
+    status = status,
+    breakPlanMode = breakPlanMode.name,
+    linkedTaskId = linkedTaskId,
+    startedAtMs = startedAtMs,
+    endedAtMs = endedAtMs,
+    dateEpochDay = dateEpochDay
+)
+
+private fun InterventionEventEntity.toDomain() = InterventionEventRecord(
+    id = id,
+    sessionKey = sessionKey,
+    eventType = InterventionEventType.fromKey(eventType),
+    packageName = packageName,
+    appLabel = appLabel,
+    declaredPurpose = declaredPurpose,
+    actionTaken = actionTaken,
+    plannedSeconds = plannedSeconds,
+    extensionSeconds = extensionSeconds,
+    actualSeconds = actualSeconds,
+    timestampMs = timestampMs,
+    dateEpochDay = dateEpochDay
+)
+
+private fun InterventionEventRecord.toEntity() = InterventionEventEntity(
+    id = id,
+    sessionKey = sessionKey,
+    eventType = eventType.name,
+    packageName = packageName,
+    appLabel = appLabel,
+    declaredPurpose = declaredPurpose,
+    actionTaken = actionTaken,
+    plannedSeconds = plannedSeconds,
+    extensionSeconds = extensionSeconds,
+    actualSeconds = actualSeconds,
+    timestampMs = timestampMs,
+    dateEpochDay = dateEpochDay
+)
+
+

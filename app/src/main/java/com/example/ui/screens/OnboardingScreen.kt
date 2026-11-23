@@ -1,16 +1,17 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,70 +37,87 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
-import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Remove
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.School
+import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.Work
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.minimumInteractiveComponentSize
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.example.R
-import com.example.model.OnboardingOptions
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.model.AppCategoryMapping
+import com.example.model.BlockedAppRule
+import com.example.model.CloudSyncState
+import com.example.model.FocusGuardSettings
+import com.example.model.NotificationPreferences
 import com.example.model.PreferredStudyTime
-import com.example.model.StudentAvatar
+import com.example.model.SessionPurposeCategory
 import com.example.model.StudyLevel
 import com.example.model.Subject
 import com.example.model.UserPreferences
-import com.example.ui.components.BrainBufferLogoMark
+import com.example.model.UserProfileRole
+import com.example.notifications.BrainBufferNotificationManager
+import com.example.system.AppUsageAwarenessHelper
+import com.example.ui.components.LiquidGlassButton
+import com.example.ui.components.LiquidGlassCard
+import com.example.ui.components.LiquidGlassChip
+import com.example.ui.components.LiquidGlassSecondaryButton
 import com.example.ui.components.SanctuaryBackdrop
-import com.example.ui.components.SanctuaryCard
-import com.example.ui.components.StudentAvatarBadge
-import com.example.ui.components.SubjectEditorSheetContent
-import com.example.ui.components.SubjectTag
-import com.example.ui.components.springClickable
-import com.example.ui.theme.BrainBufferThemeTokens
-import com.example.ui.theme.JetBrainsMonoFamily
+import com.example.ui.theme.LocalAdaptiveMetrics
 
-private const val TOTAL_STEPS = 9
+private const val TOTAL_ONBOARDING_STEPS = 4
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Concise 4-step Purpose-Aware Onboarding:
+ * 0. User Type (Student, Working Professional, Personal Productivity) + optional name
+ * 1. Preferred Purpose Categories + optional daily focus goal
+ * 2. Transparent Permission Explanations (Usage Access + Notifications — both optional)
+ * 3. Optional Account (Continue as Guest default or Email when configured)
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun OnboardingScreen(
     existingPreferences: UserPreferences,
     existingSubjects: List<Subject>,
-    onComplete: (
+    existingBlockedApps: List<BlockedAppRule>,
+    appCategoryMappings: List<AppCategoryMapping>,
+    cloudSync: CloudSyncState,
+    onStepChanged: (Int) -> Unit,
+    onSignIn: (email: String, password: String) -> Unit,
+    onSignUp: (email: String, password: String, displayName: String) -> Unit,
+    onResetPassword: (email: String) -> Unit,
+    onResendVerification: (email: String) -> Unit = {},
+    onClearAuthNotice: () -> Unit,
+    onCompleteFull: (
+        userRole: UserProfileRole,
         studentName: String,
         avatarKey: String,
         studyLevel: StudyLevel,
@@ -109,1119 +127,632 @@ fun OnboardingScreen(
         customGoal: String,
         preferredFocusMinutes: Int,
         shortBreakMinutes: Int,
+        longBreakMinutes: Int,
         preferredStudyTime: PreferredStudyTime,
         weeklyStudyDaysTarget: Int,
         biggestDistractions: Set<String>,
         otherDistraction: String,
-        dailyTargetMinutes: Int
+        dailyTargetMinutes: Int,
+        focusGuardSettings: FocusGuardSettings,
+        notificationPrefs: NotificationPreferences,
+        selectedBlockedApps: List<BlockedAppRule>,
+        appUsageAwarenessEnabled: Boolean
     ) -> Unit
 ) {
-    var currentStep by remember { mutableIntStateOf(0) } // 0..8 (Steps 1..9)
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val adaptive = LocalAdaptiveMetrics.current
 
-    var studentName by remember { mutableStateOf(existingPreferences.studentName) }
-    var selectedAvatar by remember { mutableStateOf(existingPreferences.avatar) }
-    var studyLevel by remember { mutableStateOf(existingPreferences.studyLevel) }
-    var courseOrExam by remember { mutableStateOf(existingPreferences.courseOrExamName) }
-
-    val draftSubjects = remember {
-        mutableStateListOf<Subject>().apply {
-            addAll(existingSubjects)
-        }
+    var currentStep by remember {
+        mutableIntStateOf(existingPreferences.onboardingCurrentStep.coerceIn(0, TOTAL_ONBOARDING_STEPS - 1))
     }
-    var showSubjectSheet by remember { mutableStateOf(false) }
-    var editingSubjectIndex by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(currentStep) {
+        onStepChanged(currentStep)
+    }
 
-    var selectedGoals by remember { mutableStateOf(existingPreferences.studyGoals) }
-    var customGoal by remember { mutableStateOf(existingPreferences.customGoal) }
+    var selectedRole by remember { mutableStateOf(existingPreferences.userRole) }
+    var displayName by remember { mutableStateOf(existingPreferences.studentName) }
+    var selectedPurposes by remember {
+        mutableStateOf(
+            setOf(
+                when (existingPreferences.userRole) {
+                    UserProfileRole.PROFESSIONAL -> SessionPurposeCategory.WORK
+                    UserProfileRole.PERSONAL -> SessionPurposeCategory.PERSONAL_TASK
+                    else -> SessionPurposeCategory.STUDY
+                }
+            )
+        )
+    }
+    var dailyGoalMinutes by remember {
+        mutableIntStateOf(existingPreferences.dailyTargetMinutes.coerceIn(30, 240))
+    }
+    var defaultFocusMinutes by remember {
+        mutableIntStateOf(existingPreferences.preferredFocusMinutes.coerceIn(15, 90))
+    }
 
-    var preferredFocusMin by remember { mutableIntStateOf(existingPreferences.preferredFocusMinutes) }
-    var shortBreakMin by remember { mutableIntStateOf(existingPreferences.shortBreakMinutes) }
-    var preferredStudyTime by remember { mutableStateOf(existingPreferences.preferredStudyTime) }
-    var weeklyStudyDays by remember { mutableIntStateOf(existingPreferences.weeklyStudyDaysTarget) }
+    // Live permission state refreshed on resume
+    var hasUsageAccess by remember { mutableStateOf(AppUsageAwarenessHelper.hasUsageStatsPermission(context)) }
+    var hasNotifications by remember { mutableStateOf(BrainBufferNotificationManager.hasNotificationPermission(context)) }
+    val notificationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotifications = granted || BrainBufferNotificationManager.hasNotificationPermission(context)
+    }
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasUsageAccess = AppUsageAwarenessHelper.hasUsageStatsPermission(context)
+                hasNotifications = BrainBufferNotificationManager.hasNotificationPermission(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
 
-    var selectedDistractions by remember { mutableStateOf(existingPreferences.biggestDistractions) }
-    var otherDistraction by remember { mutableStateOf(existingPreferences.otherDistraction) }
-
-    var dailyTargetMin by remember { mutableIntStateOf(existingPreferences.dailyTargetMinutes) }
-
-    val reducedMotion = BrainBufferThemeTokens.reducedMotion
-    val progress by animateFloatAsState(
-        targetValue = (currentStep + 1).toFloat() / TOTAL_STEPS.toFloat(),
-        label = "onboardingProgress"
-    )
+    // Optional email auth fields on Step 3
+    var showEmailForm by remember { mutableStateOf(false) }
+    var isSignUpMode by remember { mutableStateOf(true) }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
 
     BackHandler(enabled = currentStep > 0) {
         currentStep = (currentStep - 1).coerceAtLeast(0)
     }
 
     fun finishOnboarding() {
-        onComplete(
-            studentName,
-            selectedAvatar.key,
+        val primaryPurpose = selectedPurposes.firstOrNull() ?: SessionPurposeCategory.STUDY
+        val studyLevel = when (selectedRole) {
+            UserProfileRole.PROFESSIONAL -> StudyLevel.OTHER
+            UserProfileRole.PERSONAL -> StudyLevel.SELF_LEARNING
+            else -> existingPreferences.studyLevel
+        }
+        val updatedGuardSettings = existingPreferences.focusGuardSettings.copy(
+            defaultPurposeCategory = primaryPurpose,
+            distractionWarningsEnabled = true
+        )
+        onCompleteFull(
+            selectedRole,
+            displayName.trim(),
+            existingPreferences.avatarKey,
             studyLevel,
-            courseOrExam,
-            draftSubjects.toList(),
-            selectedGoals,
-            customGoal,
-            preferredFocusMin,
-            shortBreakMin,
-            preferredStudyTime,
-            weeklyStudyDays,
-            selectedDistractions,
-            otherDistraction,
-            dailyTargetMin
+            existingPreferences.courseOrExamName,
+            existingSubjects,
+            selectedPurposes.map { it.label }.toSet(),
+            existingPreferences.customGoal,
+            defaultFocusMinutes,
+            existingPreferences.shortBreakMinutes,
+            existingPreferences.longBreakMinutes,
+            existingPreferences.preferredStudyTime,
+            existingPreferences.weeklyStudyDaysTarget,
+            existingPreferences.biggestDistractions,
+            existingPreferences.otherDistraction,
+            dailyGoalMinutes,
+            updatedGuardSettings,
+            existingPreferences.notificationPrefs,
+            existingBlockedApps,
+            hasUsageAccess
         )
     }
 
     SanctuaryBackdrop {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .imePadding()
-                .widthIn(max = 600.dp)
-                .align(Alignment.Center)
-                .padding(horizontal = 22.dp, vertical = 12.dp)
-                .testTag("onboarding_screen")
+                .imePadding(),
+            contentAlignment = Alignment.TopCenter
         ) {
-            // Top bar (Step counter, Back & Skip for optional steps 2..8)
-            if (currentStep > 0) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .widthIn(max = adaptive.maxContentWidth)
+                    .padding(horizontal = 20.dp, vertical = 14.dp)
+                    .testTag("onboarding_screen"),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Top progress bar & back button
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    IconButton(
-                        onClick = { currentStep = (currentStep - 1).coerceAtLeast(0) },
-                        modifier = Modifier
-                            .testTag("onboarding_back_button")
-                            .minimumInteractiveComponentSize()
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = stringResource(R.string.cd_back),
-                            tint = MaterialTheme.colorScheme.onBackground
-                        )
-                    }
-
-                    Text(
-                        text = "Step ${currentStep + 1} of $TOTAL_STEPS",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    if (currentStep in 1..7) {
-                        TextButton(
-                            onClick = { currentStep = (currentStep + 1).coerceAtMost(TOTAL_STEPS - 1) },
-                            modifier = Modifier
-                                .testTag("onboarding_skip_step_button")
-                                .minimumInteractiveComponentSize()
-                        ) {
-                            Text(
-                                text = "Skip",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                    if (currentStep > 0) {
+                        IconButton(onClick = { currentStep-- }) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Previous step")
                         }
                     } else {
                         Spacer(modifier = Modifier.width(48.dp))
                     }
+                    Text(
+                        text = "Step ${currentStep + 1} of $TOTAL_ONBOARDING_STEPS",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    TextButton(onClick = { finishOnboarding() }) {
+                        Text("Skip")
+                    }
                 }
-
-                Spacer(modifier = Modifier.height(6.dp))
 
                 LinearProgressIndicator(
-                    progress = { progress },
+                    progress = { (currentStep + 1f) / TOTAL_ONBOARDING_STEPS.toFloat() },
+                    strokeCap = StrokeCap.Round,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(5.dp)
-                        .clip(RoundedCornerShape(50)),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                    strokeCap = StrokeCap.Round
+                        .height(6.dp)
+                        .clip(CircleShape)
                 )
 
-                Spacer(modifier = Modifier.height(18.dp))
-            }
-
-            // Animated Step Body
-            AnimatedContent(
-                targetState = currentStep,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                transitionSpec = {
-                    if (reducedMotion) {
-                        fadeIn(tween(0)) togetherWith fadeOut(tween(0))
-                    } else {
-                        val forward = targetState >= initialState
-                        (slideInHorizontally(tween(260)) { if (forward) it / 3 else -it / 3 } + fadeIn(tween(220)))
-                            .togetherWith(
-                                slideOutHorizontally(tween(220)) { if (forward) -it / 3 else it / 3 } + fadeOut(tween(180))
-                            )
-                    }
-                },
-                label = "onboardingStep"
-            ) { step ->
-                when (step) {
-                    0 -> Step1Welcome()
-                    1 -> Step2NameAndAvatar(
-                        studentName = studentName,
-                        onNameChange = { studentName = it },
-                        selectedAvatar = selectedAvatar,
-                        onSelectAvatar = { selectedAvatar = it }
-                    )
-                    2 -> Step3WhatAreYouStudying(
-                        studyLevel = studyLevel,
-                        onSelectLevel = { studyLevel = it },
-                        courseOrExam = courseOrExam,
-                        onCourseChange = { courseOrExam = it }
-                    )
-                    3 -> Step4Subjects(
-                        subjects = draftSubjects,
-                        onQuickAddSuggested = { title, hex, icon ->
-                            if (draftSubjects.none { it.name.equals(title, ignoreCase = true) }) {
-                                draftSubjects.add(
-                                    Subject(
-                                        name = title,
-                                        colorHex = hex,
-                                        iconKey = icon,
-                                        targetHoursPerWeek = 4f
-                                    )
-                                )
-                            }
-                        },
-                        onAddCustom = {
-                            editingSubjectIndex = null
-                            showSubjectSheet = true
-                        },
-                        onEdit = { index ->
-                            editingSubjectIndex = index
-                            showSubjectSheet = true
-                        },
-                        onDelete = { index ->
-                            if (index in draftSubjects.indices) draftSubjects.removeAt(index)
-                        }
-                    )
-                    4 -> Step5Goals(
-                        selectedGoals = selectedGoals,
-                        onToggleGoal = { goal ->
-                            selectedGoals = if (goal in selectedGoals) selectedGoals - goal else selectedGoals + goal
-                        },
-                        customGoal = customGoal,
-                        onCustomGoalChange = { customGoal = it }
-                    )
-                    5 -> Step6StudyHabits(
-                        preferredFocusMin = preferredFocusMin,
-                        onSelectFocusMin = { preferredFocusMin = it },
-                        shortBreakMin = shortBreakMin,
-                        onSelectBreakMin = { shortBreakMin = it },
-                        preferredStudyTime = preferredStudyTime,
-                        onSelectStudyTime = { preferredStudyTime = it },
-                        weeklyStudyDays = weeklyStudyDays,
-                        onSelectWeeklyDays = { weeklyStudyDays = it }
-                    )
-                    6 -> Step7Distractions(
-                        selectedDistractions = selectedDistractions,
-                        onToggleDistraction = { item ->
-                            selectedDistractions = if (item in selectedDistractions) {
-                                selectedDistractions - item
-                            } else {
-                                selectedDistractions + item
-                            }
-                        },
-                        otherDistraction = otherDistraction,
-                        onOtherChange = { otherDistraction = it }
-                    )
-                    7 -> Step8DailyTarget(
-                        dailyTargetMin = dailyTargetMin,
-                        onSelectDailyTarget = { dailyTargetMin = it }
-                    )
-                    else -> Step9Summary(
-                        studentName = studentName.trim().ifBlank { "Student" },
-                        avatar = selectedAvatar,
-                        studyLevel = studyLevel,
-                        courseOrExam = courseOrExam,
-                        subjects = draftSubjects,
-                        dailyTargetMin = dailyTargetMin,
-                        preferredFocusMin = preferredFocusMin,
-                        weeklyStudyDays = weeklyStudyDays
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Primary Navigation Button
-            val ctaLabel = when (currentStep) {
-                0 -> stringResource(R.string.action_get_started)
-                TOTAL_STEPS - 1 -> "Enter Brain Buffer"
-                else -> stringResource(R.string.action_continue)
-            }
-
-            Button(
-                onClick = {
-                    if (currentStep == TOTAL_STEPS - 1) {
-                        finishOnboarding()
-                    } else {
-                        currentStep += 1
-                    }
-                },
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp)
-                    .testTag(if (currentStep == TOTAL_STEPS - 1) "onboarding_finish_button" else "onboarding_next_button")
-            ) {
-                Text(
-                    text = ctaLabel,
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Icon(
-                    imageVector = if (currentStep == TOTAL_STEPS - 1) {
-                        Icons.Rounded.AutoAwesome
-                    } else {
-                        Icons.AutoMirrored.Rounded.ArrowForward
-                    },
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-        }
-    }
-
-    if (showSubjectSheet) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        val editing = editingSubjectIndex?.let { idx -> draftSubjects.getOrNull(idx) }
-        ModalBottomSheet(
-            onDismissRequest = { showSubjectSheet = false },
-            sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-        ) {
-            SubjectEditorSheetContent(
-                initialSubject = editing,
-                onDismiss = { showSubjectSheet = false },
-                onSave = { updated ->
-                    val idx = editingSubjectIndex
-                    if (idx != null && idx in draftSubjects.indices) {
-                        draftSubjects[idx] = updated
-                    } else {
-                        draftSubjects.add(updated)
-                    }
-                    showSubjectSheet = false
-                }
-            )
-        }
-    }
-}
-
-@Composable
-private fun Step1Welcome() {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        BrainBufferLogoMark(size = 120.dp, animatePulse = true)
-        Spacer(modifier = Modifier.height(28.dp))
-        Text(
-            text = stringResource(R.string.app_brand_display),
-            style = MaterialTheme.typography.headlineLarge.copy(
-                letterSpacing = 3.0.sp,
-                fontWeight = FontWeight.Bold
-            ),
-            color = MaterialTheme.colorScheme.onBackground,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = stringResource(R.string.app_tagline),
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(20.dp))
-        Text(
-            text = "A calm, distraction-free study companion built around your subjects, pace, and habits. Let's tailor your study space in under a minute—everything stays privately on your device.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 8.dp)
-        )
-    }
-}
-
-@Composable
-private fun Step2NameAndAvatar(
-    studentName: String,
-    onNameChange: (String) -> Unit,
-    selectedAvatar: StudentAvatar,
-    onSelectAvatar: (StudentAvatar) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
-    ) {
-        StepTitleHeader(
-            eyebrow = "ABOUT YOU",
-            title = "What should we call you?",
-            subtitle = "We'll use your name for friendly greetings—never shared outside your device."
-        )
-
-        OutlinedTextField(
-            value = studentName,
-            onValueChange = { if (it.length <= 28) onNameChange(it) },
-            label = { Text("Your name") },
-            placeholder = { Text("e.g., Shaury") },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("onboarding_name_input")
-        )
-
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                text = "Pick an optional avatar emblem",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                StudentAvatar.entries.forEach { avatar ->
-                    val selected = selectedAvatar == avatar
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(14.dp))
-                            .springClickable(onClick = { onSelectAvatar(avatar) })
-                            .padding(4.dp)
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            border = BorderStroke(
-                                width = if (selected) 2.dp else 1.dp,
-                                color = if (selected) MaterialTheme.colorScheme.primary else BrainBufferThemeTokens.extended.cardBorder
-                            ),
-                            color = MaterialTheme.colorScheme.surface
-                        ) {
-                            StudentAvatarBadge(
-                                avatar = avatar,
-                                size = 46.dp,
-                                modifier = Modifier.padding(2.dp)
-                            )
-                        }
-                        Text(
-                            text = avatar.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun Step3WhatAreYouStudying(
-    studyLevel: StudyLevel,
-    onSelectLevel: (StudyLevel) -> Unit,
-    courseOrExam: String,
-    onCourseChange: (String) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
-    ) {
-        StepTitleHeader(
-            eyebrow = "YOUR PATH",
-            title = "What are you studying?",
-            subtitle = "Helps Brain Buffer match your study planner and exam reminders."
-        )
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            StudyLevel.entries.forEach { level ->
-                val selected = studyLevel == level
-                SelectablePillChip(
-                    label = level.label,
-                    selected = selected,
-                    onClick = { onSelectLevel(level) },
-                    testTag = "onboarding_level_${level.name.lowercase()}"
-                )
-            }
-        }
-
-        OutlinedTextField(
-            value = courseOrExam,
-            onValueChange = { if (it.length <= 50) onCourseChange(it) },
-            label = { Text("Course, class, degree, or exam (optional)") },
-            placeholder = { Text(studyLevel.placeholder) },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("onboarding_course_input")
-        )
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun Step4Subjects(
-    subjects: List<Subject>,
-    onQuickAddSuggested: (String, Long, String) -> Unit,
-    onAddCustom: () -> Unit,
-    onEdit: (Int) -> Unit,
-    onDelete: (Int) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        StepTitleHeader(
-            eyebrow = "YOUR SUBJECTS",
-            title = "Add the subjects you're focusing on",
-            subtitle = "Tap quick suggestions or customize colours, target hours, and exam dates."
-        )
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            OnboardingOptions.suggestedSubjects.forEach { (title, hex, icon) ->
-                val alreadyAdded = subjects.any { it.name.equals(title, ignoreCase = true) }
-                Surface(
+                // Step Body
+                Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .springClickable(onClick = { onQuickAddSuggested(title, hex, icon) })
-                        .minimumInteractiveComponentSize(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (alreadyAdded) Color(hex).copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(
-                        1.dp,
-                        if (alreadyAdded) Color(hex) else BrainBufferThemeTokens.extended.cardBorder
-                    )
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (alreadyAdded) Icons.Rounded.Check else Icons.Rounded.Add,
-                            contentDescription = null,
-                            tint = if (alreadyAdded) Color(hex) else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (alreadyAdded) Color(hex) else MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-            }
-        }
-
-        OutlinedButton(
-            onClick = onAddCustom,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .testTag("onboarding_add_custom_subject_button")
-        ) {
-            Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Add Custom Subject")
-        }
-
-        if (subjects.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Added subjects (${subjects.size})",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                subjects.forEachIndexed { index, subject ->
-                    SanctuaryCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                SubjectTag(subject = subject)
-                                Spacer(modifier = Modifier.height(4.dp))
+                    AnimatedContent(
+                        targetState = currentStep,
+                        transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(140)) },
+                        label = "onboarding_step_content"
+                    ) { step ->
+                        when (step) {
+                            0 -> Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                                 Text(
-                                    text = buildString {
-                                        append("${subject.targetHoursPerWeek.toInt()}h/week")
-                                        subject.examDateFormatted()?.let { append(" · Exam $it") }
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
+                                    text = "Welcome to BRAIN BUFFER",
+                                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Text(
+                                    text = "Stay aligned with what you intend to use your phone for — without intrusive tracking or clutter.",
+                                    style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+
+                                Text(
+                                    text = "How will you mainly use BRAIN BUFFER?",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+
+                                RoleSelectionCard(
+                                    icon = Icons.Rounded.School,
+                                    title = "Student",
+                                    subtitle = "School, college, university, or exam preparation",
+                                    selected = selectedRole == UserProfileRole.STUDENT,
+                                    onClick = {
+                                        selectedRole = UserProfileRole.STUDENT
+                                        selectedPurposes = setOf(SessionPurposeCategory.STUDY)
+                                    },
+                                    tag = "onboarding_role_student"
+                                )
+                                RoleSelectionCard(
+                                    icon = Icons.Rounded.Work,
+                                    title = "Working Professional",
+                                    subtitle = "Deep work, office tasks, meetings, and focus blocks",
+                                    selected = selectedRole == UserProfileRole.PROFESSIONAL,
+                                    onClick = {
+                                        selectedRole = UserProfileRole.PROFESSIONAL
+                                        selectedPurposes = setOf(SessionPurposeCategory.WORK)
+                                    },
+                                    tag = "onboarding_role_professional"
+                                )
+                                RoleSelectionCard(
+                                    icon = Icons.Rounded.Person,
+                                    title = "Personal Productivity",
+                                    subtitle = "Mindful phone habits, reading, and intentional breaks",
+                                    selected = selectedRole == UserProfileRole.PERSONAL,
+                                    onClick = {
+                                        selectedRole = UserProfileRole.PERSONAL
+                                        selectedPurposes = setOf(SessionPurposeCategory.PERSONAL_TASK)
+                                    },
+                                    tag = "onboarding_role_personal"
+                                )
+
+                                OutlinedTextField(
+                                    value = displayName,
+                                    onValueChange = { displayName = it },
+                                    label = { Text("First name (optional)") },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
                             }
-                            Row {
-                                IconButton(onClick = { onEdit(index) }) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Edit,
-                                        contentDescription = "Edit subject",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(19.dp)
-                                    )
+
+                            1 -> Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                Text(
+                                    text = "Your focus purposes & goal",
+                                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Text(
+                                    text = "Pick the purposes you use most often. You can choose or customize a purpose before every session.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                LiquidGlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    cornerRadius = 20.dp,
+                                    contentPadding = PaddingValues(16.dp)
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Text(
+                                            text = "Preferred purposes",
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            SessionPurposeCategory.entries.forEach { cat ->
+                                                val isChosen = cat in selectedPurposes
+                                                LiquidGlassChip(
+                                                    label = cat.label,
+                                                    selected = isChosen,
+                                                    onClick = {
+                                                        selectedPurposes = if (isChosen && selectedPurposes.size > 1) {
+                                                            selectedPurposes - cat
+                                                        } else {
+                                                            selectedPurposes + cat
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
-                                IconButton(onClick = { onDelete(index) }) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.DeleteOutline,
-                                        contentDescription = "Delete subject",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(19.dp)
-                                    )
+
+                                LiquidGlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    cornerRadius = 20.dp,
+                                    contentPadding = PaddingValues(16.dp)
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Text(
+                                            text = "Optional daily focus goal",
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            listOf(30, 60, 90, 120).forEach { goal ->
+                                                LiquidGlassChip(
+                                                    label = "${goal} min/day",
+                                                    selected = dailyGoalMinutes == goal,
+                                                    onClick = { dailyGoalMinutes = goal }
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Default session duration",
+                                            style = MaterialTheme.typography.labelLarge
+                                        )
+                                        FlowRow(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            listOf(15, 25, 45, 60).forEach { dur ->
+                                                LiquidGlassChip(
+                                                    label = "${dur}m",
+                                                    selected = defaultFocusMinutes == dur,
+                                                    onClick = { defaultFocusMinutes = dur }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            2 -> Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Text(
+                                    text = "Transparent permissions",
+                                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Text(
+                                    text = "Both permissions are optional. Grant them now or later in Settings.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                PermissionExplainCard(
+                                    icon = Icons.Rounded.Shield,
+                                    title = "Usage Access",
+                                    explanation = "Used strictly at the app-package level to detect when you switch to an app outside your allowed list during a focus session. BRAIN BUFFER never reads messages, videos, websites, or screen content.",
+                                    granted = hasUsageAccess,
+                                    buttonLabel = "Open Usage Access",
+                                    onRequest = { AppUsageAwarenessHelper.openUsageAccessSettings(context) }
+                                )
+
+                                PermissionExplainCard(
+                                    icon = Icons.Rounded.NotificationsActive,
+                                    title = "Notifications",
+                                    explanation = "Shows your live focus countdown and delivers calm reminders when a distraction is detected or temporary app access ends.",
+                                    granted = hasNotifications,
+                                    buttonLabel = "Allow Notifications",
+                                    onRequest = {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                        } else {
+                                            BrainBufferNotificationManager.openAppNotificationSettings(context)
+                                        }
+                                    }
+                                )
+                            }
+
+                            else -> Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Text(
+                                    text = "Optional cloud backup",
+                                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Text(
+                                    text = "BRAIN BUFFER works completely offline as a Guest. Sign in only if you want optional account backup.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                if (cloudSync.session.isSignedIn) {
+                                    LiquidGlassCard(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        cornerRadius = 20.dp,
+                                        contentPadding = PaddingValues(16.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.CheckCircle,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.secondary
+                                            )
+                                            Column {
+                                                Text(
+                                                    text = "Signed in",
+                                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                                )
+                                                Text(
+                                                    text = cloudSync.session.email.ifBlank { "Account connected" },
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (cloudSync.isConfigured) {
+                                    if (!cloudSync.lastError.isNullOrBlank()) {
+                                        Text(
+                                            text = cloudSync.lastError,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                    if (!cloudSync.authNotice.isNullOrBlank()) {
+                                        Text(
+                                            text = cloudSync.authNotice,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = { showEmailForm = !showEmailForm },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(if (showEmailForm) "Hide email form" else "Sign in or create account with Email")
+                                    }
+
+                                    if (showEmailForm) {
+                                        LiquidGlassCard(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            cornerRadius = 20.dp,
+                                            contentPadding = PaddingValues(16.dp)
+                                        ) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                OutlinedTextField(
+                                                    value = email,
+                                                    onValueChange = { email = it },
+                                                    label = { Text("Email") },
+                                                    singleLine = true,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                                OutlinedTextField(
+                                                    value = password,
+                                                    onValueChange = { password = it },
+                                                    label = { Text("Password") },
+                                                    visualTransformation = PasswordVisualTransformation(),
+                                                    singleLine = true,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    TextButton(onClick = { isSignUpMode = !isSignUpMode }) {
+                                                        Text(if (isSignUpMode) "Already have an account?" else "Create account")
+                                                    }
+                                                    LiquidGlassButton(
+                                                        onClick = {
+                                                            onClearAuthNotice()
+                                                            if (isSignUpMode) {
+                                                                onSignUp(email.trim(), password, displayName.trim())
+                                                            } else {
+                                                                onSignIn(email.trim(), password)
+                                                            }
+                                                        },
+                                                        enabled = email.isNotBlank() && password.length >= 6
+                                                    ) {
+                                                        Text(if (isSignUpMode) "Sign Up" else "Sign In")
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    LiquidGlassCard(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        cornerRadius = 20.dp,
+                                        contentPadding = PaddingValues(16.dp)
+                                    ) {
+                                        Text(
+                                            text = "Running in private offline Guest mode. All sessions and insights stay safely on this device.",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-        }
-    }
-}
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun Step5Goals(
-    selectedGoals: Set<String>,
-    onToggleGoal: (String) -> Unit,
-    customGoal: String,
-    onCustomGoalChange: (String) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
-    ) {
-        StepTitleHeader(
-            eyebrow = "YOUR GOALS",
-            title = "What matters most right now?",
-            subtitle = "Choose as many as you like, or write your own personal intention."
-        )
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            OnboardingOptions.goalOptions.forEach { goal ->
-                SelectablePillChip(
-                    label = goal,
-                    selected = goal in selectedGoals,
-                    onClick = { onToggleGoal(goal) }
-                )
-            }
-        }
-
-        OutlinedTextField(
-            value = customGoal,
-            onValueChange = { if (it.length <= 60) onCustomGoalChange(it) },
-            label = { Text("Custom study goal (optional)") },
-            placeholder = { Text("e.g., Master Data Structures before finals") },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.fillMaxWidth()
-        )
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun Step6StudyHabits(
-    preferredFocusMin: Int,
-    onSelectFocusMin: (Int) -> Unit,
-    shortBreakMin: Int,
-    onSelectBreakMin: (Int) -> Unit,
-    preferredStudyTime: PreferredStudyTime,
-    onSelectStudyTime: (PreferredStudyTime) -> Unit,
-    weeklyStudyDays: Int,
-    onSelectWeeklyDays: (Int) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
-    ) {
-        StepTitleHeader(
-            eyebrow = "STUDY RHYTHM",
-            title = "How do you study best?",
-            subtitle = "We'll pre-set your Focus Timer and weekly consistency rhythm."
-        )
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "Preferred focus session length",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OnboardingOptions.focusDurationChoices.forEach { mins ->
-                    SelectablePillChip(
-                        label = "$mins min",
-                        selected = preferredFocusMin == mins,
-                        onClick = { onSelectFocusMin(mins) }
-                    )
-                }
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "Preferred short break",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OnboardingOptions.breakDurationChoices.forEach { mins ->
-                    SelectablePillChip(
-                        label = "$mins min",
-                        selected = shortBreakMin == mins,
-                        onClick = { onSelectBreakMin(mins) }
-                    )
-                }
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "When do you usually study?",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                PreferredStudyTime.entries.forEach { time ->
-                    SelectablePillChip(
-                        label = "${time.label} (${time.windowHint})",
-                        selected = preferredStudyTime == time,
-                        onClick = { onSelectStudyTime(time) }
-                    )
-                }
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "Study days per week: $weeklyStudyDays days",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                (1..7).forEach { dayCount ->
-                    val selected = weeklyStudyDays == dayCount
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .springClickable(onClick = { onSelectWeeklyDays(dayCount) })
-                            .minimumInteractiveComponentSize(),
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(
-                            1.dp,
-                            if (selected) MaterialTheme.colorScheme.primary else BrainBufferThemeTokens.extended.cardBorder
-                        )
-                    ) {
-                        Box(
-                            modifier = Modifier.padding(vertical = 10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "$dayCount",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                            )
+                // Bottom Navigation Action
+                LiquidGlassButton(
+                    onClick = {
+                        if (currentStep < TOTAL_ONBOARDING_STEPS - 1) {
+                            currentStep++
+                        } else {
+                            finishOnboarding()
                         }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun Step7Distractions(
-    selectedDistractions: Set<String>,
-    onToggleDistraction: (String) -> Unit,
-    otherDistraction: String,
-    onOtherChange: (String) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
-    ) {
-        StepTitleHeader(
-            eyebrow = "GENTLE AWARENESS",
-            title = "What usually interrupts your focus?",
-            subtitle = "Zero judgement—we use this to offer practical, supportive tips when you need a reset."
-        )
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            OnboardingOptions.distractionOptions.forEach { item ->
-                SelectablePillChip(
-                    label = item,
-                    selected = item in selectedDistractions,
-                    onClick = { onToggleDistraction(item) }
-                )
-            }
-        }
-
-        if ("Other" in selectedDistractions) {
-            OutlinedTextField(
-                value = otherDistraction,
-                onValueChange = { if (it.length <= 50) onOtherChange(it) },
-                label = { Text("Anything else?") },
-                placeholder = { Text("e.g., Overthinking or fatigue") },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-    }
-}
-
-@Composable
-private fun Step8DailyTarget(
-    dailyTargetMin: Int,
-    onSelectDailyTarget: (Int) -> Unit
-) {
-    val presetLabels = listOf(
-        30 to "30 minutes · Light & steady",
-        60 to "1 hour · Balanced daily rhythm",
-        120 to "2 hours · Deep academic pace",
-        180 to "3 hours · Intensive exam season"
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        StepTitleHeader(
-            eyebrow = "DAILY TARGET",
-            title = "Pick a realistic daily study target",
-            subtitle = "You can adjust this anytime. Reaching it unlocks calm decorations in My Study Garden."
-        )
-
-        presetLabels.forEach { (minutes, desc) ->
-            val selected = dailyTargetMin == minutes
-            SanctuaryCard(
-                modifier = Modifier.fillMaxWidth(),
-                containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f) else MaterialTheme.colorScheme.surface,
-                borderColor = if (selected) MaterialTheme.colorScheme.primary else BrainBufferThemeTokens.extended.cardBorder,
-                contentPadding = PaddingValues(16.dp),
-                onClick = { onSelectDailyTarget(minutes) }
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp)
+                        .testTag("onboarding_next_button")
                 ) {
                     Text(
-                        text = desc,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface
+                        text = when {
+                            currentStep < TOTAL_ONBOARDING_STEPS - 1 -> "Continue"
+                            cloudSync.session.isSignedIn -> "Start Using BRAIN BUFFER"
+                            else -> "Continue as Guest"
+                        },
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                     )
-                    if (selected) {
-                        Icon(
-                            imageVector = Icons.Rounded.CheckCircle,
-                            contentDescription = "Selected",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
                 }
             }
         }
+    }
+}
 
-        // Custom Target Stepper
-        SanctuaryCard(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(16.dp)
+@Composable
+private fun RoleSelectionCard(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    tag: String
+) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+        },
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .testTag(tag)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(26.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Rounded.CheckCircle,
+                    contentDescription = "Selected",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PermissionExplainCard(
+    icon: ImageVector,
+    title: String,
+    explanation: String,
+    granted: Boolean,
+    buttonLabel: String,
+    onRequest: () -> Unit
+) {
+    LiquidGlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 20.dp,
+        contentPadding = PaddingValues(16.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text(
-                        text = "Custom daily target",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "Fine-tune in 15 min increments",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Surface(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .springClickable(onClick = { onSelectDailyTarget((dailyTargetMin - 15).coerceAtLeast(15)) }),
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surfaceVariant
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Rounded.Remove, contentDescription = "Decrease target", modifier = Modifier.size(18.dp))
-                        }
-                    }
-                    Text(
-                        text = formatMinutesCompact(dailyTargetMin),
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            fontFamily = JetBrainsMonoFamily,
-                            fontWeight = FontWeight.Bold
-                        ),
-                        color = MaterialTheme.colorScheme.primary
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = if (granted) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
                     )
-                    Surface(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .springClickable(onClick = { onSelectDailyTarget((dailyTargetMin + 15).coerceAtMost(360)) }),
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Rounded.Add,
-                                contentDescription = "Increase target",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun Step9Summary(
-    studentName: String,
-    avatar: StudentAvatar,
-    studyLevel: StudyLevel,
-    courseOrExam: String,
-    subjects: List<Subject>,
-    dailyTargetMin: Int,
-    preferredFocusMin: Int,
-    weeklyStudyDays: Int
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(18.dp)
-    ) {
-        Spacer(modifier = Modifier.height(10.dp))
-        StudentAvatarBadge(avatar = avatar, size = 76.dp)
-        Text(
-            text = "Your study space is ready, $studentName.",
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground,
-            textAlign = TextAlign.Center
-        )
-        Text(
-            text = "Everything is saved privately on your device and can be updated anytime in Profile.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-
-        SanctuaryCard(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(18.dp)
-        ) {
-            SummaryMetricLine("Study path", buildString {
-                append(studyLevel.label)
-                if (courseOrExam.isNotBlank()) append(" · $courseOrExam")
-            })
-            Spacer(modifier = Modifier.height(10.dp))
-            SummaryMetricLine("Daily focus target", formatMinutesCompact(dailyTargetMin))
-            Spacer(modifier = Modifier.height(10.dp))
-            SummaryMetricLine("Focus rhythm", "$preferredFocusMin min blocks · $weeklyStudyDays days/week")
-
-            if (subjects.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(14.dp))
                 Text(
-                    text = "Your subjects",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    subjects.forEach { subject ->
-                        SubjectTag(subject = subject)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun StepTitleHeader(
-    eyebrow: String,
-    title: String,
-    subtitle: String
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            text = eyebrow,
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.4.sp
-            ),
-            color = MaterialTheme.colorScheme.primary
-        )
-        Text(
-            text = title,
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Text(
-            text = subtitle,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
-private fun SelectablePillChip(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    testTag: String? = null
-) {
-    Surface(
-        modifier = (if (testTag != null) Modifier.testTag(testTag) else Modifier)
-            .clip(RoundedCornerShape(14.dp))
-            .springClickable(onClick = onClick)
-            .minimumInteractiveComponentSize(),
-        shape = RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-        border = BorderStroke(
-            width = if (selected) 1.5.dp else 1.dp,
-            color = if (selected) MaterialTheme.colorScheme.primary else BrainBufferThemeTokens.extended.cardBorder
-        )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            if (selected) {
-                Icon(
-                    imageVector = Icons.Rounded.Check,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp)
+                    text = if (granted) "Granted" else "Optional",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (granted) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                ),
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                text = explanation,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (!granted) {
+                LiquidGlassSecondaryButton(
+                    onClick = onRequest,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(buttonLabel)
+                }
+            }
         }
-    }
-}
-
-@Composable
-private fun SummaryMetricLine(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-            color = MaterialTheme.colorScheme.onSurface
-        )
-    }
-}
-
-fun formatMinutesCompact(totalMinutes: Int): String {
-    if (totalMinutes <= 0) return "0m"
-    val hours = totalMinutes / 60
-    val mins = totalMinutes % 60
-    return when {
-        hours > 0 && mins > 0 -> "${hours}h ${mins}m"
-        hours > 0 -> "${hours}h"
-        else -> "${mins}m"
     }
 }

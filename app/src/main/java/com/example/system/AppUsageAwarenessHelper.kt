@@ -10,9 +10,11 @@ import android.provider.Settings
 import com.example.model.ActivityCategory
 import com.example.model.AppCategoryMapping
 import com.example.model.AppUsageSuggestion
+import com.example.model.BlockedAppRule
 import com.example.model.FocusGuardLevel
 import com.example.model.PersistedTimerSnapshot
 import com.example.model.StudyActivityType
+import com.example.model.TemporaryAppAllowance
 import com.example.model.UnapprovedAppWarning
 import java.util.concurrent.ConcurrentHashMap
 
@@ -21,12 +23,54 @@ import java.util.concurrent.ConcurrentHashMap
  * Guarantees the student is never spammed with repeated distraction notifications.
  */
 object DistractionAlertCoordinator {
+    private data class ForegroundDwell(
+        val packageName: String,
+        val firstObservedAtEpochMs: Long
+    )
+
     private val lastAlertByKey = ConcurrentHashMap<String, Long>()
     private val suppressedKeys = ConcurrentHashMap.newKeySet<String>()
+    private val foregroundDwellBySession = ConcurrentHashMap<String, ForegroundDwell>()
+
+    private fun sessionKey(sessionId: String): String = sessionId.ifBlank { "active" }
 
     private fun key(sessionId: String, packageName: String): String {
-        val safeSession = sessionId.ifBlank { "active" }
-        return "$safeSession|${packageName.lowercase()}"
+        return "${sessionKey(sessionId)}|${packageName.lowercase()}"
+    }
+
+    /**
+     * Tracks continuous foreground dwell time inside an unapproved package.
+     * Returns true once the user has remained continuously in [packageName] for at least
+     * [gracePeriodSeconds], resetting immediately if the foreground package changes.
+     */
+    fun hasMetGracePeriod(
+        sessionId: String,
+        packageName: String,
+        nowEpochMs: Long,
+        gracePeriodSeconds: Int
+    ): Boolean {
+        val cleanPkg = packageName.trim().lowercase()
+        if (cleanPkg.isEmpty()) return false
+        val safeGraceMs = gracePeriodSeconds.coerceIn(0, 120) * 1000L
+        if (safeGraceMs == 0L) return true
+        val sKey = sessionKey(sessionId)
+        val existing = foregroundDwellBySession[sKey]
+        if (existing == null || existing.packageName != cleanPkg) {
+            foregroundDwellBySession[sKey] = ForegroundDwell(
+                packageName = cleanPkg,
+                firstObservedAtEpochMs = nowEpochMs
+            )
+            return false
+        }
+        return (nowEpochMs - existing.firstObservedAtEpochMs) >= safeGraceMs
+    }
+
+    /**
+     * Resets dwell tracking when the user returns to Brain Buffer, an approved app,
+     * an exempt system app, a Break, or an active Temporary Access window.
+     */
+    fun clearForegroundDwell(sessionId: String) {
+        foregroundDwellBySession.remove(sessionKey(sessionId))
     }
 
     fun shouldEmitAlert(
@@ -54,14 +98,17 @@ object DistractionAlertCoordinator {
     }
 
     fun clearSession(sessionId: String) {
-        val prefix = "${sessionId.ifBlank { "active" }}|"
+        val sKey = sessionKey(sessionId)
+        val prefix = "$sKey|"
         lastAlertByKey.keys.removeIf { it.startsWith(prefix) }
         suppressedKeys.removeIf { it.startsWith(prefix) }
+        foregroundDwellBySession.remove(sKey)
     }
 
     fun resetAllForTest() {
         lastAlertByKey.clear()
         suppressedKeys.clear()
+        foregroundDwellBySession.clear()
     }
 }
 
@@ -144,6 +191,8 @@ object AppUsageAwarenessHelper {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
+    fun hasUsageAccessPermission(context: Context): Boolean = hasUsageStatsPermission(context)
+
     fun openUsageAccessSettings(context: Context): Boolean {
         return try {
             val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
@@ -180,6 +229,8 @@ object AppUsageAwarenessHelper {
         enabledByUser: Boolean,
         snapshot: PersistedTimerSnapshot,
         userMappings: List<AppCategoryMapping> = emptyList(),
+        blockedApps: List<BlockedAppRule> = emptyList(),
+        temporaryAllowances: List<TemporaryAppAllowance> = emptyList(),
         nowEpochMs: Long = System.currentTimeMillis()
     ): UnapprovedAppWarning? {
         if (!snapshot.hasStarted || snapshot.runningSinceEpochMs == null) return null
@@ -188,32 +239,84 @@ object AppUsageAwarenessHelper {
             observedPackage = recentPkg,
             snapshot = snapshot,
             userMappings = userMappings,
+            blockedApps = blockedApps,
+            temporaryAllowances = temporaryAllowances,
+            nowEpochMs = nowEpochMs,
             ownPackageName = context.packageName
         )
     }
 
     /**
-     * Pure evaluator comparing an observed package against the active Focus Guard session.
-     *
-     * Distinguishes:
-     * 1. Exempt system / emergency / dialer / launcher / IME / accessibility apps -> ALWAYS allowed
-     * 2. Currently approved activity package (`snapshot.approvedPackageName`) -> allowed
-     * 3. User-approved study apps (`mapping.isAllowedDuringFocus == true`) -> allowed during study
-     * 4. Approved entertainment / break allowances -> only flags switching to a *different* unapproved app
-     * 5. Unplanned distractions during High Focus, Custom Focus, or Study Temporary Activity -> gentle warning
+     * Evaluates an observed foreground app during a standalone Focus Guard blocking session
+     * (activated from the Block tab or an active blocking schedule).
+     */
+    fun evaluateStandaloneBlock(
+        observedPackage: String,
+        blockedApps: List<BlockedAppRule>,
+        temporaryAllowances: List<TemporaryAppAllowance> = emptyList(),
+        nowEpochMs: Long = System.currentTimeMillis(),
+        ownPackageName: String = ""
+    ): UnapprovedAppWarning? {
+        if (observedPackage.isBlank()) return null
+        if (isExemptSystemPackage(observedPackage, ownPackageName)) return null
+        if (temporaryAllowances.any {
+                it.packageName.equals(observedPackage, ignoreCase = true) && it.isActive(nowEpochMs)
+            }
+        ) {
+            return null
+        }
+        val explicitBlock = blockedApps.firstOrNull {
+            it.packageName.equals(observedPackage, ignoreCase = true) && it.isBlocked
+        } ?: return null
+        return UnapprovedAppWarning(
+            packageName = observedPackage,
+            appDisplayName = explicitBlock.appLabel.ifBlank { observedPackage.substringAfterLast('.') },
+            observedCategory = ActivityCategory.ENTERTAINMENT,
+            message = "${explicitBlock.appLabel} is blocked by your active Focus Guard session (${explicitBlock.category.label})."
+        )
+    }
+
+    /**
+     * Pure evaluator comparing an observed package against the active Focus Guard session,
+     * active temporary allowances, and the user's Focus Guard blocklist rules.
      */
     fun evaluateAppAgainstApprovedActivity(
         observedPackage: String,
         snapshot: PersistedTimerSnapshot,
         userMappings: List<AppCategoryMapping> = emptyList(),
+        blockedApps: List<BlockedAppRule> = emptyList(),
+        temporaryAllowances: List<TemporaryAppAllowance> = emptyList(),
+        nowEpochMs: Long = System.currentTimeMillis(),
         ownPackageName: String = ""
     ): UnapprovedAppWarning? {
         if (observedPackage.isBlank()) return null
         if (isExemptSystemPackage(observedPackage, ownPackageName)) return null
 
+        // Never warn if the user granted an active timed exception for this package
+        if (temporaryAllowances.any {
+                it.packageName.equals(observedPackage, ignoreCase = true) && it.isActive(nowEpochMs)
+            }
+        ) {
+            return null
+        }
+
         // Never warn if the student explicitly approved this exact package
         if (snapshot.approvedPackageName.equals(observedPackage, ignoreCase = true)) {
             return null
+        }
+
+        // Check explicit user-configured Focus Guard blocklist first
+        val explicitBlock = blockedApps.firstOrNull {
+            it.packageName.equals(observedPackage, ignoreCase = true) &&
+                it.isBlockedFor(snapshot.focusGuardLevel)
+        }
+        if (explicitBlock != null && !snapshot.isSwitchedActivity) {
+            return UnapprovedAppWarning(
+                packageName = observedPackage,
+                appDisplayName = explicitBlock.appLabel.ifBlank { observedPackage.substringAfterLast('.') },
+                observedCategory = ActivityCategory.ENTERTAINMENT,
+                message = "${explicitBlock.appLabel} is on your ${snapshot.focusGuardLevel.label} blocklist (${explicitBlock.category.label}). Return to your focus session?"
+            )
         }
 
         val mapped = userMappings.firstOrNull { it.packageName.equals(observedPackage, ignoreCase = true) }

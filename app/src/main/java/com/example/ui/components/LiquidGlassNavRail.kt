@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -118,6 +119,7 @@ fun BrainBufferLiquidGlassRail(
     val lensExpandAnim = remember { Animatable(0f) }
     val lensVelocityStretchAnim = remember { Animatable(0f) }
     val pressDipAnim = remember { Animatable(0f) }
+    val cachedCapsulePath = remember { Path() }
 
     val measuredSlots = remember {
         mutableStateListOf<MeasuredVerticalSlot>().apply {
@@ -371,7 +373,8 @@ fun BrainBufferLiquidGlassRail(
                     isVertical = true,
                     customCornerRadiusPx = 24.dp.toPx() + 4.dp.toPx() * expand,
                     enableSpecularSheen = renderQuality.enableSpecularSheen,
-                    enableAmbientShadow = renderQuality.enableAmbientShadows
+                    enableAmbientShadow = renderQuality.enableAmbientShadows,
+                    reusablePath = cachedCapsulePath
                 )
             }
 

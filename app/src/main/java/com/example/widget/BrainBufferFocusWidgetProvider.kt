@@ -11,8 +11,6 @@ import android.widget.RemoteViews
 import com.example.MainActivity
 import com.example.R
 import com.example.data.BrainBufferRepository
-import com.example.data.local.BrainBufferDatabase
-import com.example.data.local.UserPreferencesStore
 import com.example.domain.FocusTimerEngine
 import com.example.model.FocusMode
 import com.example.notifications.BrainBufferNotificationManager
@@ -67,10 +65,7 @@ class BrainBufferFocusWidgetProvider : AppWidgetProvider() {
             manager: AppWidgetManager,
             appWidgetIds: IntArray
         ) {
-            val repository = BrainBufferRepository(
-                BrainBufferDatabase.getInstance(context),
-                UserPreferencesStore(context)
-            )
+            val repository = BrainBufferRepository.getInstance(context)
             val snapshot = repository.getTimerSnapshotOnce()
             val prefs = repository.getPreferencesOnce()
             val subjects = repository.getSubjectsOnce()

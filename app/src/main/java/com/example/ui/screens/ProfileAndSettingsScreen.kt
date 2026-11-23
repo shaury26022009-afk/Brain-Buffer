@@ -1,7 +1,6 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,7 +12,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -21,614 +19,885 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import android.content.Intent
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.VolumeUp
-import androidx.compose.material.icons.outlined.DarkMode
-import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.LightMode
-import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.PhoneAndroid
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.outlined.Vibration
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Remove
-import androidx.compose.material.icons.rounded.Spa
+import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.PrivacyTip
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.minimumInteractiveComponentSize
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.R
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.StrokeCap
+import com.example.audio.LocalAmbientSoundscapeController
+import com.example.domain.DailyFocusGoalProgress
+import com.example.domain.IntentRealityAnalyticsEngine
+import com.example.model.BreakPlanMode
+import com.example.model.FocusGuardSettings
+import com.example.model.InsightsRangeFilter
 import com.example.model.NotificationPreferences
-import com.example.model.OnboardingOptions
-import com.example.model.PreferredStudyTime
-import com.example.model.StudentAvatar
-import com.example.model.StudyLevel
-import com.example.model.Subject
+import com.example.model.SessionPurposeCategory
 import com.example.model.ThemeMode
-import com.example.model.UserPreferences
-import com.example.performance.DevicePerformanceSignals
-import com.example.performance.PerformanceProfile
-import com.example.performance.PerformanceProfileOverride
+import com.example.notifications.BrainBufferNotificationManager
 import com.example.system.AppUsageAwarenessHelper
+import com.example.system.BrainBufferHaptics
 import com.example.system.DndFocusController
-import com.example.ui.components.BrainBufferLogoMark
+import com.example.system.HapticEvent
+import com.example.ui.components.FocusSoundscapePill
+import com.example.ui.components.FocusSoundscapeSheet
+import com.example.ui.components.LiquidGlassButton
 import com.example.ui.components.LiquidGlassCard
-import com.example.ui.components.LiquidGlassIconContainer
+import com.example.ui.components.LiquidGlassChip
+import com.example.ui.components.LiquidGlassSecondaryButton
 import com.example.ui.components.LiquidGlassSegmentedControl
-import com.example.ui.components.LiquidGlassTone
 import com.example.ui.components.SanctuaryBackdrop
-import com.example.ui.components.SanctuaryCard
-import com.example.ui.components.SectionHeader
-import com.example.ui.components.StudentAvatarBadge
-import com.example.ui.components.SubScreenTopBar
-import com.example.ui.components.SubjectEditorSheetContent
-import com.example.ui.components.SubjectTag
-import com.example.ui.components.springClickable
-import com.example.ui.theme.BrainBufferThemeTokens
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.LocalAdaptiveMetrics
 import com.example.viewmodel.BrainBufferUiState
 
-private enum class ProfileTab(val label: String) {
-    INSIGHTS("Insights"),
-    PROFILE("Profile"),
-    SETTINGS("Settings")
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Top-level Settings & Profile Tab (Destination 4 of BRAIN BUFFER).
+ *
+ * Organized cleanly into the exact 8 essential sections:
+ * 1. Appearance (Light / Dark AMOLED / System, Reduced motion)
+ * 2. Focus defaults (Default purpose, duration, break plan, daily goal)
+ * 3. Intervention preferences (Grace period, cooldown, distraction nudges, unlock check-in)
+ * 4. Sound (Ambient soundscapes + sound/haptics toggles)
+ * 5. Permissions (Live Android Usage Access, Notifications, Do Not Disturb)
+ * 6. Notifications (Master, Live timer, Break reminders, Lock-screen privacy)
+ * 7. Privacy and data (Package-level privacy guarantee, Export JSON, Clear data, Replay onboarding)
+ * 8. Account (Guest mode or optional Supabase account, Sync, Sign Out, Delete Account)
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ProfileScreen(
     uiState: BrainBufferUiState,
-    onUpdateTheme: (ThemeMode) -> Unit,
-    onUpdateProfile: (
-        studentName: String,
-        avatarKey: String,
-        studyLevel: StudyLevel,
-        courseOrExamName: String,
-        studyGoals: Set<String>,
-        customGoal: String,
-        preferredStudyTime: PreferredStudyTime,
-        weeklyStudyDaysTarget: Int,
-        biggestDistractions: Set<String>,
-        otherDistraction: String
-    ) -> Unit,
-    onSaveSubject: (Subject) -> Unit,
-    onDeleteSubject: (Long) -> Unit,
-    onUpdateTimerAndTarget: (focusMin: Int, shortBreakMin: Int, longBreakMin: Int, dailyTargetMin: Int) -> Unit,
+    onUpdateTheme: (ThemeMode) -> Unit = {},
+    onUpdateFocusGuardSettings: (FocusGuardSettings) -> Unit = {},
+    onUpdateTimerAndTarget: (focusMin: Int, shortBreakMin: Int, longBreakMin: Int, dailyTargetMin: Int) -> Unit = { _, _, _, _ -> },
     onUpdateAppSettings: (
         notificationsEnabled: Boolean,
         breakRemindersEnabled: Boolean,
         soundEnabled: Boolean,
         hapticsEnabled: Boolean,
         reducedMotionOverride: Boolean
-    ) -> Unit,
-    onOpenMindReset: () -> Unit,
-    onLoadDemoData: () -> Unit,
-    onClearAllData: () -> Unit,
-    onResetOnboarding: () -> Unit,
-    onExportStudyBackup: () -> String = { "" },
-    onUpdatePerformanceOverride: (PerformanceProfileOverride) -> Unit = {},
+    ) -> Unit = { _, _, _, _, _ -> },
     onUpdateNotificationPrefs: (NotificationPreferences) -> Unit = {},
-    onUpdateAppUsageAwareness: (Boolean) -> Unit = {}
+    onUpdateAppUsageAwareness: (Boolean) -> Unit = {},
+    onExportStudyBackup: () -> String = { "" },
+    onClearAllData: () -> Unit = {},
+    onResetOnboarding: () -> Unit = {},
+    onOpenAuth: () -> Unit = {},
+    onSyncNow: () -> Unit = {},
+    onSignOut: (Boolean) -> Unit = {},
+    onDeleteAccount: ((Boolean, String) -> Unit) -> Unit = { cb -> cb(false, "Not connected") }
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val adaptive = LocalAdaptiveMetrics.current
-    var activeTab by remember { mutableStateOf(ProfileTab.INSIGHTS) }
-    var showProfileEditor by remember { mutableStateOf(false) }
-    var editingSubject by remember { mutableStateOf<Subject?>(null) }
-    var showSubjectSheet by remember { mutableStateOf(false) }
+    val soundscapeController = LocalAmbientSoundscapeController.current
+    val soundscapeState by soundscapeController.state.collectAsState()
+
+    val prefs = uiState.preferences
+    val fg = prefs.focusGuardSettings
+    val notif = prefs.notificationPrefs
+    val todaySummary = remember(
+        uiState.purposeSessions,
+        uiState.sessions,
+        uiState.interventionEvents,
+        uiState.todayEpochDay
+    ) {
+        IntentRealityAnalyticsEngine.computeSummary(
+            purposeSessions = uiState.purposeSessions,
+            legacyFocusSessions = uiState.sessions,
+            interventionEvents = uiState.interventionEvents,
+            range = InsightsRangeFilter.TODAY,
+            todayEpochDay = uiState.todayEpochDay
+        )
+    }
+    val todayGoalProgress = remember(todaySummary.approvedFocusMinutes, prefs.dailyTargetMinutes) {
+        IntentRealityAnalyticsEngine.computeDailyGoalProgress(
+            focusedMinutesToday = todaySummary.approvedFocusMinutes,
+            dailyTargetMinutes = prefs.dailyTargetMinutes
+        )
+    }
+
+    var hasUsageAccess by remember { mutableStateOf(AppUsageAwarenessHelper.hasUsageStatsPermission(context)) }
+    var hasNotifications by remember { mutableStateOf(BrainBufferNotificationManager.hasNotificationPermission(context)) }
+    var hasDndAccess by remember { mutableStateOf(DndFocusController.isAccessGranted(context)) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasUsageAccess = AppUsageAwarenessHelper.hasUsageStatsPermission(context)
+                hasNotifications = BrainBufferNotificationManager.hasNotificationPermission(context)
+                hasDndAccess = DndFocusController.isAccessGranted(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    var showSoundscapeSheet by remember { mutableStateOf(false) }
+    var showClearDataDialog by remember { mutableStateOf(false) }
+    var showDeleteAccountDialog by remember { mutableStateOf(false) }
+    var feedbackBanner by remember { mutableStateOf<String?>(null) }
 
     SanctuaryBackdrop {
         Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding(),
             contentAlignment = Alignment.TopCenter
         ) {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .widthIn(max = adaptive.maxContentWidth)
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
                     .testTag("profile_list"),
-                contentPadding = PaddingValues(
-                    start = adaptive.horizontalPadding,
-                    end = adaptive.horizontalPadding,
-                    top = 16.dp,
-                    bottom = adaptive.bottomContentClearance
-                ),
-                verticalArrangement = Arrangement.spacedBy(adaptive.sectionSpacing)
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 120.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                if (adaptive.useTwoColumnLayout) {
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(modifier = Modifier.weight(1.15f)) {
-                                ProfileHeroCard(
-                                    uiState = uiState,
-                                    onEditProfile = { showProfileEditor = true }
-                                )
-                            }
-                            Box(modifier = Modifier.weight(0.85f)) {
-                                MindResetInviteBanner(
-                                    resetsCount = uiState.preferences.mindResetCount,
-                                    onOpenMindReset = onOpenMindReset
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    // 1. Profile Header Card
-                    item {
-                        ProfileHeroCard(
-                            uiState = uiState,
-                            onEditProfile = { showProfileEditor = true }
-                        )
-                    }
-
-                    // 2. Mind Reset Invitation Card
-                    item {
-                        MindResetInviteBanner(
-                            resetsCount = uiState.preferences.mindResetCount,
-                            onOpenMindReset = onOpenMindReset
-                        )
-                    }
-                }
-
-                // 3. Segmented Tab Switcher (Insights | Profile | Settings)
+                // Top-level Settings Header
                 item {
-                    LiquidGlassSegmentedControl(
-                        items = ProfileTab.entries,
-                        selectedItem = activeTab,
-                        onSelect = { activeTab = it },
-                        labelProvider = { it.label },
-                        testTagProvider = { "profile_tab_${it.name.lowercase()}" }
-                    )
-                }
-
-                // 4. Tab Content
-                when (activeTab) {
-                    ProfileTab.INSIGHTS -> {
-                        item {
-                            InsightsContent(uiState = uiState)
-                        }
-                    }
-
-                    ProfileTab.PROFILE -> {
-                        item {
-                            ProfileDetailsSection(
-                                uiState = uiState,
-                                onEditProfile = { showProfileEditor = true },
-                                onAddSubject = {
-                                    editingSubject = null
-                                    showSubjectSheet = true
-                                },
-                                onEditSubject = { subject ->
-                                    editingSubject = subject
-                                    showSubjectSheet = true
-                                },
-                                onDeleteSubject = onDeleteSubject
-                            )
-                        }
-                    }
-
-                    ProfileTab.SETTINGS -> {
-                        item {
-                            SettingsContentSection(
-                                preferences = uiState.preferences,
-                                resolvedProfile = uiState.resolvedPerformanceProfile,
-                                deviceSignals = uiState.deviceSignals,
-                                onUpdateTheme = onUpdateTheme,
-                                onUpdateTimerAndTarget = onUpdateTimerAndTarget,
-                                onUpdateAppSettings = onUpdateAppSettings,
-                                onUpdatePerformanceOverride = onUpdatePerformanceOverride,
-                                onUpdateNotificationPrefs = onUpdateNotificationPrefs,
-                                onUpdateAppUsageAwareness = onUpdateAppUsageAwareness,
-                                onLoadDemoData = onLoadDemoData,
-                                onClearAllData = onClearAllData,
-                                onResetOnboarding = onResetOnboarding,
-                                onExportStudyBackup = onExportStudyBackup
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (showProfileEditor) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
-            onDismissRequest = { showProfileEditor = false },
-            sheetState = sheetState,
-            containerColor = BrainBufferThemeTokens.glass.sheetBackground
-        ) {
-            ProfileEditorSheetContent(
-                preferences = uiState.preferences,
-                onDismiss = { showProfileEditor = false },
-                onSave = { name, avatarKey, level, course, goals, customGoal, studyTime, daysTarget, distractions, otherDist ->
-                    onUpdateProfile(
-                        name,
-                        avatarKey,
-                        level,
-                        course,
-                        goals,
-                        customGoal,
-                        studyTime,
-                        daysTarget,
-                        distractions,
-                        otherDist
-                    )
-                    showProfileEditor = false
-                }
-            )
-        }
-    }
-
-    if (showSubjectSheet) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
-            onDismissRequest = { showSubjectSheet = false },
-            sheetState = sheetState,
-            containerColor = BrainBufferThemeTokens.glass.sheetBackground
-        ) {
-            SubjectEditorSheetContent(
-                initialSubject = editingSubject,
-                onDismiss = { showSubjectSheet = false },
-                onSave = { subject ->
-                    onSaveSubject(subject)
-                    showSubjectSheet = false
-                }
-            )
-        }
-    }
-}
-
-@Composable
-fun SettingsStandaloneScreen(
-    uiState: BrainBufferUiState,
-    onBack: () -> Unit,
-    onUpdateTheme: (ThemeMode) -> Unit,
-    onUpdateTimerAndTarget: (focusMin: Int, shortBreakMin: Int, longBreakMin: Int, dailyTargetMin: Int) -> Unit,
-    onUpdateAppSettings: (
-        notificationsEnabled: Boolean,
-        breakRemindersEnabled: Boolean,
-        soundEnabled: Boolean,
-        hapticsEnabled: Boolean,
-        reducedMotionOverride: Boolean
-    ) -> Unit,
-    onLoadDemoData: () -> Unit,
-    onClearAllData: () -> Unit,
-    onResetOnboarding: () -> Unit,
-    onExportStudyBackup: () -> String = { "" },
-    onUpdatePerformanceOverride: (PerformanceProfileOverride) -> Unit = {},
-    onUpdateNotificationPrefs: (NotificationPreferences) -> Unit = {},
-    onUpdateAppUsageAwareness: (Boolean) -> Unit = {}
-) {
-    val adaptive = LocalAdaptiveMetrics.current
-    SanctuaryBackdrop {
-        Column(modifier = Modifier.fillMaxSize()) {
-            SubScreenTopBar(
-                title = "Settings",
-                subtitle = "Performance, notifications, focus defaults & privacy",
-                onBack = onBack
-            )
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.TopCenter
-            ) {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .widthIn(max = adaptive.maxContentWidth)
-                        .navigationBarsPadding(),
-                    contentPadding = PaddingValues(
-                        start = adaptive.horizontalPadding,
-                        end = adaptive.horizontalPadding,
-                        top = 8.dp,
-                        bottom = 36.dp
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(adaptive.sectionSpacing)
-                ) {
-                    item {
-                        SettingsContentSection(
-                            preferences = uiState.preferences,
-                            resolvedProfile = uiState.resolvedPerformanceProfile,
-                            deviceSignals = uiState.deviceSignals,
-                            onUpdateTheme = onUpdateTheme,
-                            onUpdateTimerAndTarget = onUpdateTimerAndTarget,
-                            onUpdateAppSettings = onUpdateAppSettings,
-                            onUpdatePerformanceOverride = onUpdatePerformanceOverride,
-                            onUpdateNotificationPrefs = onUpdateNotificationPrefs,
-                            onUpdateAppUsageAwareness = onUpdateAppUsageAwareness,
-                            onLoadDemoData = onLoadDemoData,
-                            onClearAllData = onClearAllData,
-                            onResetOnboarding = onResetOnboarding,
-                            onExportStudyBackup = onExportStudyBackup
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "SETTINGS & PROFILE",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = prefs.displayName.ifBlank { "BRAIN BUFFER Settings" },
+                            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Text(
+                            text = "${prefs.userRole.label} · ${if (uiState.cloudSync.session.isSignedIn) uiState.cloudSync.session.email else "Guest (local-first)"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-            }
-        }
-    }
-}
 
-@Composable
-private fun ProfileHeroCard(
-    uiState: BrainBufferUiState,
-    onEditProfile: () -> Unit
-) {
-    val prefs = uiState.preferences
-    val subtitle = buildString {
-        append(prefs.studyLevel.label)
-        if (prefs.courseOrExamName.isNotBlank()) {
-            append(" · ")
-            append(prefs.courseOrExamName)
-        }
-    }
-
-    SanctuaryCard(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            StudentAvatarBadge(
-                avatar = prefs.avatar,
-                size = 56.dp
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = prefs.displayName,
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            IconButton(
-                onClick = onEditProfile,
-                modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .testTag("edit_profile_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Edit,
-                    contentDescription = "Edit profile",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-        HorizontalDivider(color = BrainBufferThemeTokens.extended.cardBorder)
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            ProfileMiniStat(label = "Subjects", value = "${uiState.subjects.size}")
-            ProfileMiniStat(label = "Sessions", value = "${uiState.focusOnlySessions.size}")
-            ProfileMiniStat(label = "Streak", value = "${uiState.currentStreakDays}d")
-            ProfileMiniStat(label = "Daily Goal", value = "${prefs.dailyTargetMinutes}m")
-        }
-    }
-}
-
-@Composable
-private fun ProfileMiniStat(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = value,
-            style = MaterialTheme.typography.titleMedium.copy(
-                fontFamily = JetBrainsMonoFamily,
-                fontWeight = FontWeight.Bold
-            ),
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
-private fun MindResetInviteBanner(
-    resetsCount: Int,
-    onOpenMindReset: () -> Unit
-) {
-    val extended = BrainBufferThemeTokens.extended
-    LiquidGlassCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("profile_mind_reset_banner"),
-        tone = LiquidGlassTone.ACCENT,
-        cornerRadius = 22.dp,
-        borderAccent = if (extended.isDark) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.72f),
-        contentPadding = PaddingValues(0.dp),
-        onClick = onOpenMindReset
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(
-                        if (extended.isDark) {
-                            listOf(
-                                extended.heroGradientStart.copy(alpha = 0.88f),
-                                extended.heroGradientEnd.copy(alpha = 0.94f)
-                            )
-                        } else {
-                            listOf(
-                                extended.heroGradientStart,
-                                extended.heroGradientEnd
-                            )
-                        }
-                    )
-                )
-                .padding(horizontal = 18.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            LiquidGlassIconContainer(
-                size = 44.dp,
-                accentColor = Color.White,
-                shape = CircleShape
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Spa,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Need a Mind Reset?",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White
-                )
-                Text(
-                    text = "Breathing guide, brain dump & session reflection ($resetsCount resets)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.86f)
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ProfileDetailsSection(
-    uiState: BrainBufferUiState,
-    onEditProfile: () -> Unit,
-    onAddSubject: () -> Unit,
-    onEditSubject: (Subject) -> Unit,
-    onDeleteSubject: (Long) -> Unit
-) {
-    val adaptive = LocalAdaptiveMetrics.current
-    val prefs = uiState.preferences
-    val extended = BrainBufferThemeTokens.extended
-
-    val subjectsCard: @Composable () -> Unit = {
-        SanctuaryCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("profile_subjects_card")
-        ) {
-            SectionHeader(
-                title = "Your Subjects",
-                subtitle = "${uiState.subjects.size} active subject${if (uiState.subjects.size == 1) "" else "s"}",
-                actionLabel = "Add",
-                onActionClick = onAddSubject
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (uiState.subjects.isEmpty()) {
-                Text(
-                    text = "Add the subjects or exams you're studying to track time, tasks, and deadlines.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    uiState.subjects.forEach { subject ->
+                if (!feedbackBanner.isNullOrBlank()) {
+                    item {
                         Surface(
                             shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            border = BorderStroke(1.dp, extended.cardBorder),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
-                                modifier = Modifier.padding(start = 12.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Column(
-                                    modifier = Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    SubjectTag(subject = subject)
-                                    val examPart = subject.examDateFormatted()?.let { " · Exam $it" } ?: ""
+                                Text(
+                                    text = feedbackBanner!!,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = { feedbackBanner = null }) {
+                                    Text("OK")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 1. Appearance
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Rounded.Palette,
+                        title = "1. Appearance",
+                        tag = "settings_section_appearance"
+                    ) {
+                        val themeOptions = listOf(ThemeMode.LIGHT, ThemeMode.DARK, ThemeMode.SYSTEM)
+                        LiquidGlassSegmentedControl(
+                            items = themeOptions,
+                            selectedItem = prefs.themeMode,
+                            onSelect = onUpdateTheme,
+                            labelProvider = { mode ->
+                                when (mode) {
+                                    ThemeMode.LIGHT -> "Light"
+                                    ThemeMode.DARK -> "Dark AMOLED"
+                                    ThemeMode.SYSTEM -> "System"
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("settings_theme_selector")
+                        )
+                        SettingsToggleRow(
+                            title = "Reduce motion",
+                            subtitle = "Minimize animations for calmer transitions",
+                            checked = prefs.reducedMotionOverride,
+                            onCheckedChange = { reduced ->
+                                onUpdateAppSettings(
+                                    prefs.notificationsEnabled,
+                                    prefs.breakRemindersEnabled,
+                                    prefs.soundEnabled,
+                                    prefs.hapticsEnabled,
+                                    reduced
+                                )
+                            }
+                        )
+                    }
+                }
+
+                // 2. Focus defaults
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Rounded.Timer,
+                        title = "2. Focus defaults",
+                        tag = "settings_section_focus_defaults"
+                    ) {
+                        Text(
+                            text = "Default purpose",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SessionPurposeCategory.entries.forEach { cat ->
+                                LiquidGlassChip(
+                                    label = cat.shortLabel,
+                                    selected = fg.defaultPurposeCategory == cat,
+                                    onClick = {
+                                        onUpdateFocusGuardSettings(fg.copy(defaultPurposeCategory = cat))
+                                    }
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = "Default session duration",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(15, 25, 45, 60).forEach { mins ->
+                                LiquidGlassChip(
+                                    label = "${mins}m",
+                                    selected = prefs.preferredFocusMinutes == mins,
+                                    onClick = {
+                                        onUpdateTimerAndTarget(
+                                            mins,
+                                            prefs.shortBreakMinutes,
+                                            prefs.longBreakMinutes,
+                                            prefs.dailyTargetMinutes
+                                        )
+                                    }
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = "Default break plan",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            BreakPlanMode.entries.forEach { mode ->
+                                LiquidGlassChip(
+                                    label = mode.label,
+                                    selected = fg.defaultBreakPlanMode == mode,
+                                    onClick = {
+                                        onUpdateFocusGuardSettings(fg.copy(defaultBreakPlanMode = mode))
+                                    }
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Flag,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Column {
                                     Text(
-                                        text = "${subject.targetHoursPerWeek.toInt()}h / week target$examPart",
+                                        text = "Daily focus goal",
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "Tracked on your Home screen",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                IconButton(
-                                    onClick = { onEditSubject(subject) },
-                                    modifier = Modifier.minimumInteractiveComponentSize()
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                                modifier = Modifier.testTag("settings_daily_goal_value")
+                            ) {
+                                Text(
+                                    text = todayGoalProgress.formattedTarget,
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontFamily = JetBrainsMonoFamily,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+
+                        // Today's real focus progress preview against the selected target
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("settings_daily_goal_preview")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Edit,
-                                        contentDescription = "Edit ${subject.name}",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    Text(
+                                        text = "Today: ${todayGoalProgress.formattedFocused} / ${todayGoalProgress.formattedTarget}",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = if (todayGoalProgress.isGoalReached) "Goal Reached" else "${todayGoalProgress.percentComplete}%",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontFamily = JetBrainsMonoFamily,
+                                            fontWeight = FontWeight.Bold
+                                        ),
+                                        color = if (todayGoalProgress.isGoalReached) {
+                                            MaterialTheme.colorScheme.tertiary
+                                        } else {
+                                            MaterialTheme.colorScheme.primary
+                                        }
                                     )
                                 }
-                                IconButton(
-                                    onClick = { onDeleteSubject(subject.id) },
-                                    modifier = Modifier.minimumInteractiveComponentSize()
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.DeleteOutline,
-                                        contentDescription = "Delete ${subject.name}",
-                                        tint = MaterialTheme.colorScheme.error
+                                LinearProgressIndicator(
+                                    progress = { todayGoalProgress.progressFraction },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(999.dp)),
+                                    color = if (todayGoalProgress.isGoalReached) {
+                                        MaterialTheme.colorScheme.tertiary
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    strokeCap = StrokeCap.Round
+                                )
+                            }
+                        }
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(30, 60, 90, 120, 180).forEach { goal ->
+                                LiquidGlassChip(
+                                    label = DailyFocusGoalProgress.formatGoalDuration(goal),
+                                    selected = prefs.dailyTargetMinutes == goal,
+                                    onClick = {
+                                        BrainBufferHaptics.perform(
+                                            context = context,
+                                            event = HapticEvent.STEP_TICK,
+                                            enabled = prefs.hapticsEnabled
+                                        )
+                                        onUpdateTimerAndTarget(
+                                            prefs.preferredFocusMinutes,
+                                            prefs.shortBreakMinutes,
+                                            prefs.longBreakMinutes,
+                                            goal
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("settings_daily_goal_preset_$goal")
+                                )
+                            }
+                        }
+
+                        // Precision custom target stepper (15m to 8h in 15m increments)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    val decreased = (prefs.dailyTargetMinutes - DailyFocusGoalProgress.STEP_MINUTES)
+                                        .coerceAtLeast(DailyFocusGoalProgress.MIN_GOAL_MINUTES)
+                                    BrainBufferHaptics.perform(
+                                        context = context,
+                                        event = HapticEvent.STEP_TICK,
+                                        enabled = prefs.hapticsEnabled
                                     )
+                                    onUpdateTimerAndTarget(
+                                        prefs.preferredFocusMinutes,
+                                        prefs.shortBreakMinutes,
+                                        prefs.longBreakMinutes,
+                                        decreased
+                                    )
+                                },
+                                enabled = prefs.dailyTargetMinutes > DailyFocusGoalProgress.MIN_GOAL_MINUTES,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("settings_daily_goal_minus")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Remove,
+                                    contentDescription = "Decrease daily focus goal by 15 minutes",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("15m")
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    val increased = (prefs.dailyTargetMinutes + DailyFocusGoalProgress.STEP_MINUTES)
+                                        .coerceAtMost(DailyFocusGoalProgress.MAX_GOAL_MINUTES)
+                                    BrainBufferHaptics.perform(
+                                        context = context,
+                                        event = HapticEvent.STEP_TICK,
+                                        enabled = prefs.hapticsEnabled
+                                    )
+                                    onUpdateTimerAndTarget(
+                                        prefs.preferredFocusMinutes,
+                                        prefs.shortBreakMinutes,
+                                        prefs.longBreakMinutes,
+                                        increased
+                                    )
+                                },
+                                enabled = prefs.dailyTargetMinutes < DailyFocusGoalProgress.MAX_GOAL_MINUTES,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("settings_daily_goal_plus")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Add,
+                                    contentDescription = "Increase daily focus goal by 15 minutes",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("15m")
+                            }
+                        }
+                    }
+                }
+
+                // 3. Intervention preferences
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Rounded.Tune,
+                        title = "3. Intervention preferences",
+                        tag = "settings_section_interventions"
+                    ) {
+                        SettingsToggleRow(
+                            title = "Unapproved app nudges",
+                            subtitle = "Gently alert when switching outside your allowed apps",
+                            checked = fg.distractionWarningsEnabled,
+                            onCheckedChange = { enabled ->
+                                onUpdateFocusGuardSettings(fg.copy(distractionWarningsEnabled = enabled))
+                                onUpdateAppUsageAwareness(enabled)
+                            }
+                        )
+                        Text(
+                            text = "Grace period before reminder",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(10, 15, 30).forEach { sec ->
+                                LiquidGlassChip(
+                                    label = "${sec}s",
+                                    selected = fg.gracePeriodSeconds == sec,
+                                    onClick = {
+                                        onUpdateFocusGuardSettings(fg.copy(gracePeriodSeconds = sec))
+                                    }
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Cooldown between alerts for same app",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(30, 60, 90).forEach { sec ->
+                                LiquidGlassChip(
+                                    label = "${sec}s",
+                                    selected = fg.distractionCooldownSeconds == sec,
+                                    onClick = {
+                                        onUpdateFocusGuardSettings(fg.copy(distractionCooldownSeconds = sec))
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 4. Sound
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Rounded.GraphicEq,
+                        title = "4. Sound",
+                        tag = "settings_section_sound"
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Ambient focus soundscape",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                )
+                                Text(
+                                    text = "Rain, Brown noise, Pink noise, Gentle ambience, or Off",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            FocusSoundscapePill(
+                                state = soundscapeState,
+                                onClick = { showSoundscapeSheet = true }
+                            )
+                        }
+                        SettingsToggleRow(
+                            title = "Alert sounds",
+                            subtitle = "Play soft tones for session end and temporary access expiry",
+                            checked = prefs.soundEnabled,
+                            onCheckedChange = { enabled ->
+                                onUpdateAppSettings(
+                                    prefs.notificationsEnabled,
+                                    prefs.breakRemindersEnabled,
+                                    enabled,
+                                    prefs.hapticsEnabled,
+                                    prefs.reducedMotionOverride
+                                )
+                            }
+                        )
+                        SettingsToggleRow(
+                            title = "Haptic feedback",
+                            subtitle = "Tactile pulses on session start, completion, and distraction alerts",
+                            checked = prefs.hapticsEnabled,
+                            onCheckedChange = { enabled ->
+                                if (enabled) {
+                                    BrainBufferHaptics.perform(
+                                        context = context,
+                                        event = HapticEvent.SESSION_START,
+                                        enabled = true
+                                    )
+                                }
+                                onUpdateAppSettings(
+                                    prefs.notificationsEnabled,
+                                    prefs.breakRemindersEnabled,
+                                    prefs.soundEnabled,
+                                    enabled,
+                                    prefs.reducedMotionOverride
+                                )
+                            }
+                        )
+                    }
+                }
+
+                // 5. Permissions
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Rounded.Shield,
+                        title = "5. Permissions",
+                        tag = "settings_section_permissions"
+                    ) {
+                        PermissionStatusRow(
+                            title = "Usage Access",
+                            subtitle = "App-level matching only. Never inspects in-app content.",
+                            granted = hasUsageAccess,
+                            onOpen = { AppUsageAwarenessHelper.openUsageAccessSettings(context) }
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                        PermissionStatusRow(
+                            title = "Notifications",
+                            subtitle = "Live focus timer & temporary access expiry reminders.",
+                            granted = hasNotifications,
+                            onOpen = { BrainBufferNotificationManager.openAppNotificationSettings(context) }
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                        PermissionStatusRow(
+                            title = "Do Not Disturb (optional)",
+                            subtitle = "Silence incoming notifications during focus sessions.",
+                            granted = hasDndAccess,
+                            onOpen = { DndFocusController.openDndAccessSettings(context) }
+                        )
+                    }
+                }
+
+                // 6. Notifications
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Rounded.Notifications,
+                        title = "6. Notifications",
+                        tag = "settings_section_notifications"
+                    ) {
+                        SettingsToggleRow(
+                            title = "Enable notifications",
+                            subtitle = "Master switch for all BRAIN BUFFER alerts",
+                            checked = prefs.notificationsEnabled,
+                            onCheckedChange = { enabled ->
+                                onUpdateAppSettings(
+                                    enabled,
+                                    prefs.breakRemindersEnabled,
+                                    prefs.soundEnabled,
+                                    prefs.hapticsEnabled,
+                                    prefs.reducedMotionOverride
+                                )
+                            }
+                        )
+                        SettingsToggleRow(
+                            title = "Live focus countdown notification",
+                            subtitle = "Show ongoing session progress in the status shade",
+                            checked = notif.activeFocusEnabled,
+                            onCheckedChange = { enabled ->
+                                onUpdateNotificationPrefs(notif.copy(activeFocusEnabled = enabled))
+                            }
+                        )
+                        SettingsToggleRow(
+                            title = "Break & completion reminders",
+                            subtitle = "Notify when a break or focus session finishes",
+                            checked = notif.breakRemindersEnabled,
+                            onCheckedChange = { enabled ->
+                                onUpdateNotificationPrefs(
+                                    notif.copy(
+                                        breakRemindersEnabled = enabled,
+                                        completedSessionsEnabled = enabled
+                                    )
+                                )
+                            }
+                        )
+                        SettingsToggleRow(
+                            title = "Hide session names on lock screen",
+                            subtitle = "Keep personal session titles private when phone is locked",
+                            checked = notif.hidePrivateNotesOnLockScreen,
+                            onCheckedChange = { enabled ->
+                                onUpdateNotificationPrefs(notif.copy(hidePrivateNotesOnLockScreen = enabled))
+                            }
+                        )
+                    }
+                }
+
+                // 7. Privacy and data
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Rounded.PrivacyTip,
+                        title = "7. Privacy and data",
+                        tag = "settings_section_privacy"
+                    ) {
+                        Text(
+                            text = "Privacy guarantee: BRAIN BUFFER only compares foreground app package names against your chosen allowed apps. It never reads messages, videos, websites, keystrokes, or screen content.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            LiquidGlassSecondaryButton(
+                                onClick = {
+                                    val json = onExportStudyBackup()
+                                    if (json.isNotBlank()) {
+                                        val share = Intent(Intent.ACTION_SEND).apply {
+                                            type = "application/json"
+                                            putExtra(Intent.EXTRA_SUBJECT, "BRAIN BUFFER Backup")
+                                            putExtra(Intent.EXTRA_TEXT, json)
+                                        }
+                                        runCatching {
+                                            context.startActivity(Intent.createChooser(share, "Export Backup"))
+                                        }
+                                        feedbackBanner = "Backup prepared for sharing."
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Export")
+                            }
+                            OutlinedButton(
+                                onClick = onResetOnboarding,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Onboarding")
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { showClearDataDialog = true },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Rounded.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Clear local focus data")
+                        }
+                    }
+                }
+
+                // 8. Account
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Rounded.AccountCircle,
+                        title = "8. Account",
+                        tag = "settings_section_account"
+                    ) {
+                        if (uiState.cloudSync.session.isSignedIn) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.CloudDone,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = uiState.cloudSync.session.email.ifBlank { "Connected account" },
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                    Text(
+                                        text = "Cloud sync enabled",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                LiquidGlassSecondaryButton(
+                                    onClick = onSyncNow,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Sync now")
+                                }
+                                OutlinedButton(
+                                    onClick = { onSignOut(false) },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Sign out")
+                                }
+                            }
+                            TextButton(
+                                onClick = { showDeleteAccountDialog = true },
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Text("Delete cloud account")
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.CloudOff,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Guest mode (local-first)",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                    Text(
+                                        text = "No account required. Sign in optionally for backup.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (uiState.cloudSync.isConfigured) {
+                                LiquidGlassButton(
+                                    onClick = onOpenAuth,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Sign in or create account")
                                 }
                             }
                         }
@@ -638,775 +907,28 @@ private fun ProfileDetailsSection(
         }
     }
 
-    val habitsCard: @Composable () -> Unit = {
-        SanctuaryCard(modifier = Modifier.fillMaxWidth()) {
-            SectionHeader(
-                title = "Personalisation & Habits",
-                subtitle = "Editable anytime",
-                actionLabel = "Edit",
-                onActionClick = onEditProfile
-            )
-            Spacer(modifier = Modifier.height(14.dp))
-
-            ProfileKeyValueRow("Study Window", "${prefs.preferredStudyTime.label} (${prefs.preferredStudyTime.windowHint})")
-            Spacer(modifier = Modifier.height(8.dp))
-            ProfileKeyValueRow("Weekly Goal", "${prefs.weeklyStudyDaysTarget} days / week")
-
-            val allGoals = buildList {
-                addAll(prefs.studyGoals)
-                if (prefs.customGoal.isNotBlank()) add(prefs.customGoal)
-            }
-            if (allGoals.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(14.dp))
-                Text(
-                    text = "Study Goals",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    allGoals.forEach { goal ->
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-                        ) {
-                            Text(
-                                text = goal,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
-            val allDistractions = buildList {
-                addAll(prefs.biggestDistractions)
-                if (prefs.otherDistraction.isNotBlank()) add(prefs.otherDistraction)
-            }
-            if (allDistractions.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(14.dp))
-                Text(
-                    text = "Watch-outs (supportive reminders)",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    allDistractions.forEach { item ->
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            border = BorderStroke(1.dp, extended.cardBorder)
-                        ) {
-                            Text(
-                                text = item,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = uiState.distractionTip,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-
-    if (adaptive.useTwoColumnLayout) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Box(modifier = Modifier.weight(1f)) { subjectsCard() }
-            Box(modifier = Modifier.weight(1f)) { habitsCard() }
-        }
-    } else {
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            subjectsCard()
-            habitsCard()
-        }
-    }
-}
-
-@Composable
-private fun ProfileKeyValueRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurface
+    if (showSoundscapeSheet) {
+        FocusSoundscapeSheet(
+            state = soundscapeState,
+            onSelectSoundscape = { soundscapeController.selectSoundscape(it) },
+            onTogglePlayPause = { soundscapeController.togglePlayPause() },
+            onVolumeChange = { soundscapeController.setVolume(it) },
+            onSyncWithTimerChange = { soundscapeController.setSyncWithTimer(it) },
+            onDismiss = { showSoundscapeSheet = false }
         )
     }
-}
 
-@Composable
-private fun SettingsContentSection(
-    preferences: UserPreferences,
-    onUpdateTheme: (ThemeMode) -> Unit,
-    onUpdateTimerAndTarget: (focusMin: Int, shortBreakMin: Int, longBreakMin: Int, dailyTargetMin: Int) -> Unit,
-    onUpdateAppSettings: (
-        notificationsEnabled: Boolean,
-        breakRemindersEnabled: Boolean,
-        soundEnabled: Boolean,
-        hapticsEnabled: Boolean,
-        reducedMotionOverride: Boolean
-    ) -> Unit,
-    onLoadDemoData: () -> Unit,
-    onClearAllData: () -> Unit,
-    onResetOnboarding: () -> Unit,
-    onExportStudyBackup: () -> String = { "" },
-    resolvedProfile: PerformanceProfile = PerformanceProfile.BALANCED,
-    deviceSignals: DevicePerformanceSignals = DevicePerformanceSignals(4096, false, 4, android.os.Build.VERSION.SDK_INT, 60f, false),
-    onUpdatePerformanceOverride: (PerformanceProfileOverride) -> Unit = {},
-    onUpdateNotificationPrefs: (NotificationPreferences) -> Unit = {},
-    onUpdateAppUsageAwareness: (Boolean) -> Unit = {}
-) {
-    val adaptive = LocalAdaptiveMetrics.current
-    val context = LocalContext.current
-    val extended = BrainBufferThemeTokens.extended
-    var showDemoConfirm by remember { mutableStateOf(false) }
-    var showClearConfirm by remember { mutableStateOf(false) }
-    var exportFeedback by remember { mutableStateOf<String?>(null) }
-
-    val appearanceCard: @Composable () -> Unit = {
-        SanctuaryCard(modifier = Modifier.fillMaxWidth()) {
-            SectionHeader(
-                title = "Appearance",
-                subtitle = "AMOLED Dark uses pure #000000 black surfaces"
-            )
-            Spacer(modifier = Modifier.height(14.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val modes = listOf(
-                    Triple(ThemeMode.LIGHT, "Light", Icons.Outlined.LightMode),
-                    Triple(ThemeMode.DARK, "AMOLED", Icons.Outlined.DarkMode),
-                    Triple(ThemeMode.SYSTEM, "System", Icons.Outlined.PhoneAndroid)
-                )
-                modes.forEach { (mode, label, icon) ->
-                    val selected = preferences.themeMode == mode
-                    LiquidGlassCard(
-                        modifier = Modifier
-                            .weight(1f)
-                            .minimumInteractiveComponentSize()
-                            .testTag("theme_option_${mode.name.lowercase()}"),
-                        tone = if (selected) LiquidGlassTone.ACCENT else LiquidGlassTone.SUBTLE,
-                        cornerRadius = 15.dp,
-                        borderAccent = if (selected) MaterialTheme.colorScheme.primary else null,
-                        contentPadding = PaddingValues(vertical = 12.dp, horizontal = 8.dp),
-                        onClick = { onUpdateTheme(mode) }
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = label,
-                                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                                ),
-                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    val focusDefaultsCard: @Composable () -> Unit = {
-        SanctuaryCard(modifier = Modifier.fillMaxWidth()) {
-            SectionHeader(
-                title = "Focus & Target Defaults",
-                subtitle = "Applied automatically to new sessions"
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-
-            DurationStepperRow(
-                label = "Focus Duration",
-                valueLabel = "${preferences.preferredFocusMinutes} min",
-                onDecrement = {
-                    val next = (preferences.preferredFocusMinutes - 5).coerceAtLeast(10)
-                    onUpdateTimerAndTarget(next, preferences.shortBreakMinutes, preferences.longBreakMinutes, preferences.dailyTargetMinutes)
-                },
-                onIncrement = {
-                    val next = (preferences.preferredFocusMinutes + 5).coerceAtMost(90)
-                    onUpdateTimerAndTarget(next, preferences.shortBreakMinutes, preferences.longBreakMinutes, preferences.dailyTargetMinutes)
-                }
-            )
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = extended.cardBorder)
-            DurationStepperRow(
-                label = "Short Break",
-                valueLabel = "${preferences.shortBreakMinutes} min",
-                onDecrement = {
-                    val next = (preferences.shortBreakMinutes - 1).coerceAtLeast(3)
-                    onUpdateTimerAndTarget(preferences.preferredFocusMinutes, next, preferences.longBreakMinutes, preferences.dailyTargetMinutes)
-                },
-                onIncrement = {
-                    val next = (preferences.shortBreakMinutes + 1).coerceAtMost(20)
-                    onUpdateTimerAndTarget(preferences.preferredFocusMinutes, next, preferences.longBreakMinutes, preferences.dailyTargetMinutes)
-                }
-            )
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = extended.cardBorder)
-            DurationStepperRow(
-                label = "Long Break",
-                valueLabel = "${preferences.longBreakMinutes} min",
-                onDecrement = {
-                    val next = (preferences.longBreakMinutes - 5).coerceAtLeast(10)
-                    onUpdateTimerAndTarget(preferences.preferredFocusMinutes, preferences.shortBreakMinutes, next, preferences.dailyTargetMinutes)
-                },
-                onIncrement = {
-                    val next = (preferences.longBreakMinutes + 5).coerceAtMost(45)
-                    onUpdateTimerAndTarget(preferences.preferredFocusMinutes, preferences.shortBreakMinutes, next, preferences.dailyTargetMinutes)
-                }
-            )
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = extended.cardBorder)
-            DurationStepperRow(
-                label = "Daily Focus Target",
-                valueLabel = "${preferences.dailyTargetMinutes} min",
-                onDecrement = {
-                    val next = (preferences.dailyTargetMinutes - 15).coerceAtLeast(15)
-                    onUpdateTimerAndTarget(preferences.preferredFocusMinutes, preferences.shortBreakMinutes, preferences.longBreakMinutes, next)
-                },
-                onIncrement = {
-                    val next = (preferences.dailyTargetMinutes + 15).coerceAtMost(360)
-                    onUpdateTimerAndTarget(preferences.preferredFocusMinutes, preferences.shortBreakMinutes, preferences.longBreakMinutes, next)
-                }
-            )
-        }
-    }
-
-    val comfortCard: @Composable () -> Unit = {
-        SanctuaryCard(modifier = Modifier.fillMaxWidth()) {
-            SectionHeader(title = "Preferences & Comfort")
-            Spacer(modifier = Modifier.height(8.dp))
-
-            SettingsSwitchRow(
-                icon = Icons.Outlined.Notifications,
-                title = "Study Reminders",
-                subtitle = "Gentle daily study nudge preferences",
-                checked = preferences.notificationsEnabled,
-                onCheckedChange = {
-                    onUpdateAppSettings(
-                        it,
-                        preferences.breakRemindersEnabled,
-                        preferences.soundEnabled,
-                        preferences.hapticsEnabled,
-                        preferences.reducedMotionOverride
-                    )
-                }
-            )
-            SettingsSwitchRow(
-                icon = Icons.Outlined.Notifications,
-                title = "Break Reminders",
-                subtitle = "Encourage pauses between long focus blocks",
-                checked = preferences.breakRemindersEnabled,
-                onCheckedChange = {
-                    onUpdateAppSettings(
-                        preferences.notificationsEnabled,
-                        it,
-                        preferences.soundEnabled,
-                        preferences.hapticsEnabled,
-                        preferences.reducedMotionOverride
-                    )
-                }
-            )
-            SettingsSwitchRow(
-                icon = Icons.AutoMirrored.Outlined.VolumeUp,
-                title = "Completion Chime",
-                subtitle = "Soft audio cue when a timer finishes",
-                checked = preferences.soundEnabled,
-                onCheckedChange = {
-                    onUpdateAppSettings(
-                        preferences.notificationsEnabled,
-                        preferences.breakRemindersEnabled,
-                        it,
-                        preferences.hapticsEnabled,
-                        preferences.reducedMotionOverride
-                    )
-                }
-            )
-            SettingsSwitchRow(
-                icon = Icons.Outlined.Vibration,
-                title = "Haptic Feedback",
-                subtitle = "Subtle tactile confirmation on timer controls",
-                checked = preferences.hapticsEnabled,
-                onCheckedChange = {
-                    onUpdateAppSettings(
-                        preferences.notificationsEnabled,
-                        preferences.breakRemindersEnabled,
-                        preferences.soundEnabled,
-                        it,
-                        preferences.reducedMotionOverride
-                    )
-                }
-            )
-            SettingsSwitchRow(
-                icon = Icons.Outlined.Tune,
-                title = "Reduce Motion",
-                subtitle = "Minimize animations across screens",
-                checked = preferences.reducedMotionOverride,
-                onCheckedChange = {
-                    onUpdateAppSettings(
-                        preferences.notificationsEnabled,
-                        preferences.breakRemindersEnabled,
-                        preferences.soundEnabled,
-                        preferences.hapticsEnabled,
-                        it
-                    )
-                }
-            )
-        }
-    }
-
-    val dataCard: @Composable () -> Unit = {
-        SanctuaryCard(modifier = Modifier.fillMaxWidth()) {
-            SectionHeader(
-                title = "Data & Personalisation",
-                subtitle = "Stored 100% locally on your device"
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-
-            OutlinedButton(
-                onClick = {
-                    val backupJson = onExportStudyBackup()
-                    if (backupJson.isNotBlank()) {
-                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "Brain Buffer Study Backup (JSON)")
-                            putExtra(Intent.EXTRA_TEXT, backupJson)
-                        }
-                        runCatching {
-                            context.startActivity(Intent.createChooser(shareIntent, "Export Study Backup"))
-                            exportFeedback = "Backup ready (${backupJson.length} chars) — choose where to save or share."
-                        }.onFailure {
-                            exportFeedback = "No share target available on this device."
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("settings_export_backup_button"),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Share,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Export Study Backup (JSON)")
-            }
-
-            if (exportFeedback != null) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = exportFeedback ?: "",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedButton(
-                onClick = onResetOnboarding,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("settings_reset_onboarding_button"),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Refresh,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Restart Personalisation Onboarding")
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedButton(
-                onClick = { showDemoConfirm = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("settings_load_demo_button"),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.AutoAwesome,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Load Demo Preview Data")
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedButton(
-                onClick = { showClearConfirm = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("settings_clear_data_button"),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f))
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.DeleteOutline,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Clear All Study Data")
-            }
-        }
-    }
-
-    val aboutCard: @Composable () -> Unit = {
-        SanctuaryCard(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                BrainBufferLogoMark(size = 48.dp, animatePulse = false)
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "${stringResource(R.string.app_name)} · v1.0.0",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = stringResource(R.string.app_tagline),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Offline-first student focus & planning space for phones and tablets. No account required, no ads, and your study data stays privately on your device.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-    }
-
-    val performanceCard: @Composable () -> Unit = {
-        val blurState = BrainBufferThemeTokens.blurState
-        SanctuaryCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("settings_performance_card")
-        ) {
-            SectionHeader(
-                title = "Adaptive Performance Profile",
-                subtitle = "Active: ${resolvedProfile.label} (${blurState.tier.label}) · ${deviceSignals.cpuCores} cores · ${deviceSignals.totalRamMb}MB RAM · ${deviceSignals.refreshRateHz.toInt()}Hz"
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = resolvedProfile.summary,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            LiquidGlassCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("settings_adaptive_blur_status"),
-                tone = LiquidGlassTone.SUBTLE,
-                cornerRadius = 12.dp,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-            ) {
-                Text(
-                    text = "Adaptive Blur · ${blurState.statusSummary}",
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                PerformanceProfileOverride.entries.forEach { option ->
-                    val selected = preferences.performanceOverride == option
-                    LiquidGlassCard(
-                        modifier = Modifier
-                            .weight(1f)
-                            .minimumInteractiveComponentSize()
-                            .testTag("perf_option_${option.name.lowercase()}"),
-                        tone = if (selected) LiquidGlassTone.ACCENT else LiquidGlassTone.SUBTLE,
-                        cornerRadius = 13.dp,
-                        borderAccent = if (selected) MaterialTheme.colorScheme.primary else null,
-                        contentPadding = PaddingValues(vertical = 10.dp, horizontal = 4.dp),
-                        onClick = { onUpdatePerformanceOverride(option) }
-                    ) {
-                        Box(
-                            modifier = Modifier.fillMaxWidth(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = option.label.replace("Automatic", "Auto"),
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                                ),
-                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    val notificationsCard: @Composable () -> Unit = {
-        val np = preferences.notificationPrefs
-        SanctuaryCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("settings_notifications_card")
-        ) {
-            SectionHeader(
-                title = "Smart Notification Categories",
-                subtitle = "Choose exactly what can gently notify you"
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            SettingsSwitchRow(
-                icon = Icons.Outlined.Notifications,
-                title = "Active Focus Live Timer",
-                subtitle = "Ongoing countdown, progress & Pause/End controls",
-                checked = np.activeFocusEnabled,
-                onCheckedChange = { onUpdateNotificationPrefs(np.copy(activeFocusEnabled = it)) }
-            )
-            SettingsSwitchRow(
-                icon = Icons.Outlined.Notifications,
-                title = "Activity Reminders",
-                subtitle = "Alert when a lecture, reading, or game timer wraps up",
-                checked = np.activityRemindersEnabled,
-                onCheckedChange = { onUpdateNotificationPrefs(np.copy(activityRemindersEnabled = it)) }
-            )
-            SettingsSwitchRow(
-                icon = Icons.Outlined.Notifications,
-                title = "Completed Sessions",
-                subtitle = "Celebration & Return-to-Study notification actions",
-                checked = np.completedSessionsEnabled,
-                onCheckedChange = { onUpdateNotificationPrefs(np.copy(completedSessionsEnabled = it)) }
-            )
-            SettingsSwitchRow(
-                icon = Icons.Outlined.Notifications,
-                title = "Upcoming Tasks & Exams",
-                subtitle = "Calm reminders for due tasks and exam countdowns",
-                checked = np.upcomingTasksEnabled && np.examCountdownsEnabled,
-                onCheckedChange = {
-                    onUpdateNotificationPrefs(np.copy(upcomingTasksEnabled = it, examCountdownsEnabled = it))
-                }
-            )
-            SettingsSwitchRow(
-                icon = Icons.Outlined.Tune,
-                title = "Lock-Screen Privacy",
-                subtitle = "Hide private study goals & notes on lock screen",
-                checked = np.hidePrivateNotesOnLockScreen,
-                onCheckedChange = { onUpdateNotificationPrefs(np.copy(hidePrivateNotesOnLockScreen = it)) }
-            )
-            SettingsSwitchRow(
-                icon = Icons.Outlined.DarkMode,
-                title = "Quiet Hours",
-                subtitle = if (np.quietHoursEnabled) {
-                    "Silences non-active reminders ${np.quietStartHour}:00 – ${np.quietEndHour}:00"
-                } else {
-                    "Pause study & break reminders overnight"
-                },
-                checked = np.quietHoursEnabled,
-                onCheckedChange = { onUpdateNotificationPrefs(np.copy(quietHoursEnabled = it)) }
-            )
-            if (np.quietHoursEnabled) {
-                DurationStepperRow(
-                    label = "Quiet Start Hour",
-                    valueLabel = "${np.quietStartHour}:00",
-                    onDecrement = {
-                        onUpdateNotificationPrefs(np.copy(quietStartHour = (np.quietStartHour + 23) % 24))
-                    },
-                    onIncrement = {
-                        onUpdateNotificationPrefs(np.copy(quietStartHour = (np.quietStartHour + 1) % 24))
-                    }
-                )
-                DurationStepperRow(
-                    label = "Quiet End Hour",
-                    valueLabel = "${np.quietEndHour}:00",
-                    onDecrement = {
-                        onUpdateNotificationPrefs(np.copy(quietEndHour = (np.quietEndHour + 23) % 24))
-                    },
-                    onIncrement = {
-                        onUpdateNotificationPrefs(np.copy(quietEndHour = (np.quietEndHour + 1) % 24))
-                    }
-                )
-            }
-        }
-    }
-
-    val permissionsPrivacyCard: @Composable () -> Unit = {
-        val dndGranted = DndFocusController.isAccessGranted(context)
-        val usageGranted = AppUsageAwarenessHelper.hasUsageStatsPermission(context)
-        SanctuaryCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("settings_permissions_privacy_card")
-        ) {
-            SectionHeader(
-                title = "Focus Permissions & Privacy",
-                subtitle = "100% optional, local-only & reversible anytime"
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedButton(
-                onClick = { DndFocusController.openDndAccessSettings(context) },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    if (dndGranted) "Do Not Disturb Access: Granted ✓ (Manage)"
-                    else "Grant Voluntary Do Not Disturb Access"
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            SettingsSwitchRow(
-                icon = Icons.Outlined.PhoneAndroid,
-                title = "Local App-Usage Suggestions",
-                subtitle = "Optional. Suggests switching activities (e.g., YouTube → Lecture) locally on-device. Never reads content or auto-counts study time.",
-                checked = preferences.appUsageAwarenessEnabled && usageGranted,
-                onCheckedChange = { enabled ->
-                    if (enabled && !usageGranted) {
-                        AppUsageAwarenessHelper.openUsageAccessSettings(context)
-                    } else {
-                        onUpdateAppUsageAwareness(enabled)
-                    }
-                }
-            )
-
-            if (!usageGranted) {
-                OutlinedButton(
-                    onClick = { AppUsageAwarenessHelper.openUsageAccessSettings(context) },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Open Android Usage Access Settings (Optional)")
-                }
-            }
-        }
-    }
-
-    if (adaptive.useTwoColumnLayout) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("settings_tablet_two_column"),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                appearanceCard()
-                performanceCard()
-                focusDefaultsCard()
-                aboutCard()
-            }
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                notificationsCard()
-                permissionsPrivacyCard()
-                comfortCard()
-                dataCard()
-            }
-        }
-    } else {
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            appearanceCard()
-            performanceCard()
-            notificationsCard()
-            permissionsPrivacyCard()
-            focusDefaultsCard()
-            comfortCard()
-            dataCard()
-            aboutCard()
-        }
-    }
-
-    if (showDemoConfirm) {
+    if (showClearDataDialog) {
         AlertDialog(
-            onDismissRequest = { showDemoConfirm = false },
-            title = { Text("Load Demo Preview Data?") },
-            text = {
-                Text("This will add sample subjects, tasks, focus sessions, and garden plants so you can preview charts and visuals. You can clear everything anytime.")
-            },
-            confirmButton = {
-                Button(onClick = {
-                    showDemoConfirm = false
-                    onLoadDemoData()
-                }) {
-                    Text("Load Preview")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDemoConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    if (showClearConfirm) {
-        AlertDialog(
-            onDismissRequest = { showClearConfirm = false },
-            title = { Text("Clear All Study Data?") },
-            text = {
-                Text("This removes all saved tasks, focus sessions, garden plants, and reflection notes from this device. Your profile settings stay intact.")
-            },
+            onDismissRequest = { showClearDataDialog = false },
+            title = { Text("Clear local focus data?") },
+            text = { Text("This deletes your local session history, intervention logs, and tasks on this device.") },
             confirmButton = {
                 Button(
                     onClick = {
-                        showClearConfirm = false
+                        showClearDataDialog = false
                         onClearAllData()
+                        feedbackBanner = "Local focus data cleared."
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
@@ -1414,90 +936,86 @@ private fun SettingsContentSection(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) {
-                    Text("Cancel")
+                TextButton(onClick = { showClearDataDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showDeleteAccountDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteAccountDialog = false },
+            title = { Text("Delete cloud account?") },
+            text = { Text("This permanently removes your cloud account and synced data.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteAccountDialog = false
+                        onDeleteAccount { _, msg -> feedbackBanner = msg }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
                 }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAccountDialog = false }) { Text("Cancel") }
             }
         )
     }
 }
 
 @Composable
-private fun DurationStepperRow(
-    label: String,
-    valueLabel: String,
-    onDecrement: () -> Unit,
-    onIncrement: () -> Unit
+private fun SettingsSectionCard(
+    icon: ImageVector,
+    title: String,
+    tag: String,
+    content: @Composable () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+    LiquidGlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(tag),
+        cornerRadius = 22.dp,
+        contentPadding = PaddingValues(16.dp)
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            IconButton(
-                onClick = onDecrement,
-                modifier = Modifier.minimumInteractiveComponentSize()
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.Remove,
-                    contentDescription = "Decrease $label"
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
-            Text(
-                text = valueLabel,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontFamily = JetBrainsMonoFamily,
-                    fontWeight = FontWeight.Bold
-                ),
-                color = MaterialTheme.colorScheme.primary
-            )
-            IconButton(
-                onClick = onIncrement,
-                modifier = Modifier.minimumInteractiveComponentSize()
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Add,
-                    contentDescription = "Increase $label"
-                )
-            }
+            content()
         }
     }
 }
 
 @Composable
-private fun SettingsSwitchRow(
-    icon: ImageVector,
+private fun SettingsToggleRow(
     title: String,
     subtitle: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(20.dp)
-        )
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
@@ -1506,337 +1024,44 @@ private fun SettingsSwitchRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange
-        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ProfileEditorSheetContent(
-    preferences: UserPreferences,
-    onDismiss: () -> Unit,
-    onSave: (
-        studentName: String,
-        avatarKey: String,
-        studyLevel: StudyLevel,
-        courseOrExamName: String,
-        studyGoals: Set<String>,
-        customGoal: String,
-        preferredStudyTime: PreferredStudyTime,
-        weeklyStudyDaysTarget: Int,
-        biggestDistractions: Set<String>,
-        otherDistraction: String
-    ) -> Unit
+private fun PermissionStatusRow(
+    title: String,
+    subtitle: String,
+    granted: Boolean,
+    onOpen: () -> Unit
 ) {
-    var name by remember { mutableStateOf(preferences.studentName) }
-    var selectedAvatar by remember { mutableStateOf(preferences.avatar) }
-    var studyLevel by remember { mutableStateOf(preferences.studyLevel) }
-    var courseName by remember { mutableStateOf(preferences.courseOrExamName) }
-    var selectedGoals by remember { mutableStateOf(preferences.studyGoals) }
-    var customGoal by remember { mutableStateOf(preferences.customGoal) }
-    var studyTime by remember { mutableStateOf(preferences.preferredStudyTime) }
-    var weeklyDays by remember { mutableIntStateOf(preferences.weeklyStudyDaysTarget) }
-    var selectedDistractions by remember { mutableStateOf(preferences.biggestDistractions) }
-    var otherDistraction by remember { mutableStateOf(preferences.otherDistraction) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
-            .imePadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            text = "Edit Your Study Profile",
-            style = MaterialTheme.typography.headlineSmall,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        OutlinedTextField(
-            value = name,
-            onValueChange = { name = it },
-            label = { Text("Your Name") },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("profile_editor_name_input")
-        )
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "Avatar",
-                style = MaterialTheme.typography.labelLarge,
+                text = title,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                StudentAvatar.entries.forEach { avatar ->
-                    val selected = avatar == selectedAvatar
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(14.dp))
-                            .springClickable { selectedAvatar = avatar }
-                            .minimumInteractiveComponentSize(),
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(
-                            1.5.dp,
-                            if (selected) MaterialTheme.colorScheme.primary else BrainBufferThemeTokens.extended.cardBorder
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            StudentAvatarBadge(avatar = avatar, size = 28.dp)
-                            Text(
-                                text = avatar.label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-            }
         }
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (granted) {
             Text(
-                text = "What are you studying?",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = "Granted",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.secondary
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                StudyLevel.entries.forEach { level ->
-                    val selected = level == studyLevel
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .springClickable { studyLevel = level }
-                            .minimumInteractiveComponentSize(),
-                        shape = RoundedCornerShape(50),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(
-                            1.dp,
-                            if (selected) MaterialTheme.colorScheme.primary else BrainBufferThemeTokens.extended.cardBorder
-                        )
-                    ) {
-                        Text(
-                            text = level.label,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                        )
-                    }
-                }
+        } else {
+            TextButton(onClick = onOpen) {
+                Text("Grant")
             }
         }
-
-        OutlinedTextField(
-            value = courseName,
-            onValueChange = { courseName = it },
-            label = { Text("Course, Class, Degree or Exam") },
-            placeholder = { Text(studyLevel.placeholder) },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "Preferred Study Time",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                PreferredStudyTime.entries.forEach { option ->
-                    val selected = option == studyTime
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .springClickable { studyTime = option }
-                            .minimumInteractiveComponentSize(),
-                        shape = RoundedCornerShape(50),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(
-                            1.dp,
-                            if (selected) MaterialTheme.colorScheme.primary else BrainBufferThemeTokens.extended.cardBorder
-                        )
-                    ) {
-                        Text(
-                            text = option.label,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                        )
-                    }
-                }
-            }
-        }
-
-        DurationStepperRow(
-            label = "Study Days / Week",
-            valueLabel = "$weeklyDays days",
-            onDecrement = { weeklyDays = (weeklyDays - 1).coerceAtLeast(1) },
-            onIncrement = { weeklyDays = (weeklyDays + 1).coerceAtMost(7) }
-        )
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "Study Goals",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OnboardingOptions.goalOptions.forEach { goal ->
-                    val selected = goal in selectedGoals
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .springClickable {
-                                selectedGoals = if (selected) selectedGoals - goal else selectedGoals + goal
-                            }
-                            .minimumInteractiveComponentSize(),
-                        shape = RoundedCornerShape(50),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(
-                            1.dp,
-                            if (selected) MaterialTheme.colorScheme.primary else BrainBufferThemeTokens.extended.cardBorder
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            if (selected) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Check,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                            Text(
-                                text = goal,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-            }
-            OutlinedTextField(
-                value = customGoal,
-                onValueChange = { customGoal = it },
-                label = { Text("Custom Goal (Optional)") },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "Biggest Distractions",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OnboardingOptions.distractionOptions.forEach { distraction ->
-                    val selected = distraction in selectedDistractions
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .springClickable {
-                                selectedDistractions = if (selected) {
-                                    selectedDistractions - distraction
-                                } else {
-                                    selectedDistractions + distraction
-                                }
-                            }
-                            .minimumInteractiveComponentSize(),
-                        shape = RoundedCornerShape(50),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(
-                            1.dp,
-                            if (selected) MaterialTheme.colorScheme.primary else BrainBufferThemeTokens.extended.cardBorder
-                        )
-                    ) {
-                        Text(
-                            text = distraction,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                        )
-                    }
-                }
-            }
-            OutlinedTextField(
-                value = otherDistraction,
-                onValueChange = { otherDistraction = it },
-                label = { Text("Other Distraction (Optional)") },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            OutlinedButton(
-                onClick = onDismiss,
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Text("Cancel")
-            }
-            Button(
-                onClick = {
-                    onSave(
-                        name.trim(),
-                        selectedAvatar.key,
-                        studyLevel,
-                        courseName.trim(),
-                        selectedGoals,
-                        customGoal.trim(),
-                        studyTime,
-                        weeklyDays,
-                        selectedDistractions,
-                        otherDistraction.trim()
-                    )
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("profile_editor_save_button"),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Text("Save Changes")
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
     }
 }

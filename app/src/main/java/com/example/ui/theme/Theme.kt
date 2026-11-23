@@ -14,6 +14,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.SideEffect
@@ -32,94 +33,232 @@ import com.example.performance.AdaptiveBlurFrameMonitor
 import com.example.performance.AdaptiveBlurState
 import com.example.performance.LocalAdaptiveBlurController
 import com.example.performance.LocalAdaptiveBlurState
+import com.example.performance.PerformanceProfileEngine
+import com.example.performance.PerformanceProfileOverride
+import com.example.performance.RenderQualityTokens
+import com.example.ui.components.LiquidGlassTokens
+import com.example.ui.components.LocalLiquidGlassTokens
 
-val BrainBufferLightColorScheme = lightColorScheme(
+// ============================================================================
+// High-Contrast AMOLED Dark (#000000) & Translucent Liquid Glass Tokens
+// ============================================================================
+
+private val AmoledGlassCanvas = Color(0xFF000000)             // True pixel-off AMOLED #000000
+private val AmoledGlassSurfaceLowest = Color(0xFF000000)      // Pure AMOLED floor
+private val AmoledGlassSurfaceLow = Color(0xB80E0E14)         // 72% translucent recessed glass
+private val AmoledGlassSurface = Color(0xCC13131B)            // 80% translucent primary glass surface
+private val AmoledGlassContainer = Color(0xD6171721)          // 84% translucent standard glass card
+private val AmoledGlassContainerHigh = Color(0xE01F1F2C)      // 88% translucent elevated glass panel
+private val AmoledGlassContainerHighest = Color(0xEB282838)   // 92% translucent floating capsule tier
+private val AmoledGlassSurfaceBright = Color(0xF0303042)      // 94% translucent specular highlight tier
+private val AmoledGlassVariant = Color(0xA61D1D28)            // 65% translucent tracks, pills & wells
+
+private val AmoledHighContrastInk = Color(0xFFFFFFFF)         // 21:1 contrast on #000000
+private val AmoledSecondaryInk = Color(0xFFD6D6E4)            // 13.8:1 contrast on #000000
+private val AmoledGlassOutline = Color(0x4DFFFFFF)            // 30% translucent specular glass rim
+private val AmoledGlassOutlineSubtle = Color(0x2BFFFFFF)      // 17% translucent hairline glass divider
+
+private val AmoledPrimaryLuminous = Color(0xFFC8B6FF)         // 11.2:1 on #000000
+private val AmoledOnPrimaryInk = Color(0xFF12072D)
+private val AmoledPrimaryGlassContainer = Color(0xA82E2254)   // 66% translucent violet glass container
+private val AmoledOnPrimaryGlassInk = Color(0xFFF7F3FF)
+
+private val AmoledSecondaryMint = Color(0xFF66ECC2)           // 13.4:1 on #000000
+private val AmoledOnSecondaryInk = Color(0xFF02291D)
+private val AmoledSecondaryGlassContainer = Color(0xA310382D) // 64% translucent mint glass container
+private val AmoledOnSecondaryGlassInk = Color(0xFFDCFCF2)
+
+private val AmoledTertiaryOrchid = Color(0xFFE2C9FF)          // 13.1:1 on #000000
+private val AmoledOnTertiaryInk = Color(0xFF260C4A)
+private val AmoledTertiaryGlassContainer = Color(0xA3351D54)  // 64% translucent orchid glass container
+private val AmoledOnTertiaryGlassInk = Color(0xFFF8F0FF)
+
+private val AmoledErrorLuminous = Color(0xFFFF859D)           // 8.9:1 on #000000
+private val AmoledOnErrorInk = Color(0xFF470514)
+private val AmoledErrorGlassContainer = Color(0xB34A1220)     // 70% translucent rose glass container
+private val AmoledOnErrorGlassInk = Color(0xFFFFE3EA)
+
+private val AmoledGlassScrim = Color(0xCC000000)
+
+// Subtle translucent frosted light glass mappings for Light Mode parity
+private val LightGlassSurface = Color(0xEBFFFFFF)
+private val LightGlassSurfaceLow = Color(0xCCF6F3FC)
+private val LightGlassContainer = Color(0xD9F1ECFA)
+private val LightGlassContainerHigh = Color(0xE6EBE4F7)
+private val LightGlassContainerHighest = Color(0xF2E3DAF3)
+private val LightGlassVariant = Color(0xBFD9D0EC)
+private val LightGlassOutline = Color(0x336B4CE6)
+private val LightGlassOutlineSubtle = Color(0x1C6B4CE6)
+
+// ============================================================================
+// Material 3 ColorSchemes — Translucent Liquid Glass Light & AMOLED Dark
+// ============================================================================
+
+val LightLiquidGlassColorScheme: ColorScheme = lightColorScheme(
     primary = LightPrimary,
     onPrimary = LightOnPrimary,
-    primaryContainer = LightPrimaryContainer,
+    primaryContainer = LightPrimaryContainer.copy(alpha = 0.86f),
     onPrimaryContainer = LightOnPrimaryContainer,
     secondary = LightSecondary,
     onSecondary = LightOnSecondary,
-    secondaryContainer = LightSecondaryContainer,
+    secondaryContainer = LightSecondaryContainer.copy(alpha = 0.86f),
     onSecondaryContainer = LightOnSecondaryContainer,
     tertiary = LightTertiary,
     onTertiary = LightOnTertiary,
-    tertiaryContainer = LightTertiaryContainer,
+    tertiaryContainer = LightTertiaryContainer.copy(alpha = 0.86f),
     onTertiaryContainer = LightOnTertiaryContainer,
     background = LightBackground,
     onBackground = LightTextPrimary,
-    surface = LightSurface,
+    surface = LightGlassSurface,
     onSurface = LightTextPrimary,
-    surfaceVariant = LightSurfaceVariant,
+    surfaceVariant = LightGlassVariant,
     onSurfaceVariant = LightTextSecondary,
+    surfaceTint = LightPrimary,
+    surfaceDim = Color(0xFFEAE4F6),
+    surfaceBright = Color(0xFFFFFFFF),
     surfaceContainerLowest = LightSurfaceLowest,
-    surfaceContainerLow = LightSurfaceLow,
-    surfaceContainer = LightSurfaceContainer,
-    surfaceContainerHigh = LightSurfaceHigh,
-    surfaceContainerHighest = LightSurfaceHighest,
-    outline = LightOutline,
-    outlineVariant = LightOutlineVariant,
+    surfaceContainerLow = LightGlassSurfaceLow,
+    surfaceContainer = LightGlassContainer,
+    surfaceContainerHigh = LightGlassContainerHigh,
+    surfaceContainerHighest = LightGlassContainerHighest,
+    outline = LightGlassOutline,
+    outlineVariant = LightGlassOutlineSubtle,
     inverseSurface = LightInverseSurface,
     inverseOnSurface = LightInverseOnSurface,
     inversePrimary = LightInversePrimary,
     error = LightError,
     onError = LightOnError,
-    errorContainer = LightErrorContainer,
+    errorContainer = LightErrorContainer.copy(alpha = 0.90f),
     onErrorContainer = LightOnErrorContainer,
     scrim = LightScrim
 )
 
-val BrainBufferDarkColorScheme = darkColorScheme(
-    primary = DarkPrimary,
-    onPrimary = DarkOnPrimary,
-    primaryContainer = DarkPrimaryContainer,
-    onPrimaryContainer = DarkOnPrimaryContainer,
-    secondary = DarkSecondary,
-    onSecondary = DarkOnSecondary,
-    secondaryContainer = DarkSecondaryContainer,
-    onSecondaryContainer = DarkOnSecondaryContainer,
-    tertiary = DarkTertiary,
-    onTertiary = DarkOnTertiary,
-    tertiaryContainer = DarkTertiaryContainer,
-    onTertiaryContainer = DarkOnTertiaryContainer,
-    background = DarkBackground,
-    onBackground = DarkTextPrimary,
-    surface = DarkSurface,
-    onSurface = DarkTextPrimary,
-    surfaceVariant = DarkSurfaceVariant,
-    onSurfaceVariant = DarkTextSecondary,
-    surfaceContainerLowest = DarkSurfaceLowest,
-    surfaceContainerLow = DarkSurfaceLow,
-    surfaceContainer = DarkSurfaceContainer,
-    surfaceContainerHigh = DarkSurfaceHigh,
-    surfaceContainerHighest = DarkSurfaceHighest,
-    outline = DarkOutline,
-    outlineVariant = DarkOutlineVariant,
-    inverseSurface = DarkInverseSurface,
-    inverseOnSurface = DarkInverseOnSurface,
-    inversePrimary = DarkInversePrimary,
-    error = DarkError,
-    onError = DarkOnError,
-    errorContainer = DarkErrorContainer,
-    onErrorContainer = DarkOnErrorContainer,
-    scrim = DarkScrim
+val AmoledLiquidGlassColorScheme: ColorScheme = darkColorScheme(
+    primary = AmoledPrimaryLuminous,
+    onPrimary = AmoledOnPrimaryInk,
+    primaryContainer = AmoledPrimaryGlassContainer,
+    onPrimaryContainer = AmoledOnPrimaryGlassInk,
+    secondary = AmoledSecondaryMint,
+    onSecondary = AmoledOnSecondaryInk,
+    secondaryContainer = AmoledSecondaryGlassContainer,
+    onSecondaryContainer = AmoledOnSecondaryGlassInk,
+    tertiary = AmoledTertiaryOrchid,
+    onTertiary = AmoledOnTertiaryInk,
+    tertiaryContainer = AmoledTertiaryGlassContainer,
+    onTertiaryContainer = AmoledOnTertiaryGlassInk,
+    background = AmoledGlassCanvas,
+    onBackground = AmoledHighContrastInk,
+    surface = AmoledGlassSurface,
+    onSurface = AmoledHighContrastInk,
+    surfaceVariant = AmoledGlassVariant,
+    onSurfaceVariant = AmoledSecondaryInk,
+    surfaceTint = AmoledPrimaryLuminous,
+    surfaceDim = AmoledGlassCanvas,
+    surfaceBright = AmoledGlassSurfaceBright,
+    surfaceContainerLowest = AmoledGlassSurfaceLowest,
+    surfaceContainerLow = AmoledGlassSurfaceLow,
+    surfaceContainer = AmoledGlassContainer,
+    surfaceContainerHigh = AmoledGlassContainerHigh,
+    surfaceContainerHighest = AmoledGlassContainerHighest,
+    outline = AmoledGlassOutline,
+    outlineVariant = AmoledGlassOutlineSubtle,
+    inverseSurface = Color(0xFFF8F8FC),
+    inverseOnSurface = Color(0xFF0A0A0D),
+    inversePrimary = VioletCore,
+    error = AmoledErrorLuminous,
+    onError = AmoledOnErrorInk,
+    errorContainer = AmoledErrorGlassContainer,
+    onErrorContainer = AmoledOnErrorGlassInk,
+    scrim = AmoledGlassScrim
+)
+
+// Compatibility aliases used across existing screens and tests
+val BrainBufferLightColorScheme: ColorScheme = LightLiquidGlassColorScheme
+val BrainBufferDarkColorScheme: ColorScheme = AmoledLiquidGlassColorScheme
+
+// ============================================================================
+// Semantic Liquid Glass Surface Palette (Bridges M3 ColorScheme & Glass Layers)
+// ============================================================================
+
+@Immutable
+data class LiquidGlassSurfaceColors(
+    val canvas: Color,
+    val glassBase: Color,
+    val glassSubtle: Color,
+    val glassElevated: Color,
+    val glassAccent: Color,
+    val specularBorderTop: Color,
+    val specularBorderBottom: Color,
+    val hairlineDivider: Color,
+    val innerSpecularGlow: Color,
+    val highContrastInk: Color,
+    val secondaryInk: Color,
+    val scrim: Color,
+    val isAmoledDark: Boolean
+)
+
+val LightLiquidGlassSurfaceColors = LiquidGlassSurfaceColors(
+    canvas = LightBackground,
+    glassBase = LightGlassSurface,
+    glassSubtle = LightGlassSurfaceLow,
+    glassElevated = Color(0xF5FFFFFF),
+    glassAccent = Color(0xD9EDE7FF),
+    specularBorderTop = Color(0xFAFFFFFF),
+    specularBorderBottom = Color(0x406B4CE6),
+    hairlineDivider = LightGlassOutlineSubtle,
+    innerSpecularGlow = Color(0x8AFFFFFF),
+    highContrastInk = LightTextPrimary,
+    secondaryInk = LightTextSecondary,
+    scrim = LightScrim,
+    isAmoledDark = false
+)
+
+val AmoledLiquidGlassSurfaceColors = LiquidGlassSurfaceColors(
+    canvas = AmoledGlassCanvas,
+    glassBase = AmoledGlassSurface,
+    glassSubtle = AmoledGlassSurfaceLow,
+    glassElevated = AmoledGlassContainerHigh,
+    glassAccent = AmoledPrimaryGlassContainer,
+    specularBorderTop = Color(0x47FFFFFF),
+    specularBorderBottom = Color(0x28FFFFFF),
+    hairlineDivider = AmoledGlassOutlineSubtle,
+    innerSpecularGlow = Color(0x1EFFFFFF),
+    highContrastInk = AmoledHighContrastInk,
+    secondaryInk = AmoledSecondaryInk,
+    scrim = AmoledGlassScrim,
+    isAmoledDark = true
+)
+
+private val HighContrastDarkExtendedColors: BrainBufferExtendedColors = DarkExtendedColors.copy(
+    secondaryBackground = AmoledGlassSurfaceLow,
+    cardBorder = AmoledGlassOutline,
+    softGlow = Color(0x26C8B6FF),
+    navBarSurface = Color(0xD90E0E14),
+    navBarBorder = AmoledGlassOutline,
+    softPurpleAccent = AmoledPrimaryLuminous,
+    sageAccent = AmoledSecondaryMint
 )
 
 /**
- * Refined, moderately rounded geometry — crisp & modern without excessive bubble rounding.
+ * Refined, moderately rounded geometry tuned for layered Liquid Glass surfaces.
  */
 val BrainBufferShapes = Shapes(
     extraSmall = RoundedCornerShape(8.dp),
     small = RoundedCornerShape(12.dp),
     medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(20.dp),
-    extraLarge = RoundedCornerShape(24.dp)
+    large = RoundedCornerShape(22.dp),
+    extraLarge = RoundedCornerShape(28.dp)
 )
 
+// ============================================================================
+// CompositionLocals & Centralized Theme Token Accessor
+// ============================================================================
+
 val LocalBrainBufferColors = staticCompositionLocalOf { LightExtendedColors }
+val LocalLiquidGlassSurfaceColors = staticCompositionLocalOf { LightLiquidGlassSurfaceColors }
 val LocalBrainBufferTextStyles = staticCompositionLocalOf { DefaultBrainBufferTextStyles }
 val LocalReducedMotion = staticCompositionLocalOf { false }
-val LocalPerformanceQuality = staticCompositionLocalOf { com.example.performance.RenderQualityTokens() }
+val LocalPerformanceQuality = staticCompositionLocalOf { RenderQualityTokens() }
 val LocalAppInForeground = staticCompositionLocalOf { true }
 
 object BrainBufferThemeTokens {
@@ -143,6 +282,11 @@ object BrainBufferThemeTokens {
         @ReadOnlyComposable
         get() = LocalBrainBufferColors.current
 
+    val surfaceColors: LiquidGlassSurfaceColors
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalLiquidGlassSurfaceColors.current
+
     val textStyles: BrainBufferTextStyles
         @Composable
         @ReadOnlyComposable
@@ -153,7 +297,7 @@ object BrainBufferThemeTokens {
         @ReadOnlyComposable
         get() = LocalReducedMotion.current
 
-    val renderQuality: com.example.performance.RenderQualityTokens
+    val renderQuality: RenderQualityTokens
         @Composable
         @ReadOnlyComposable
         get() = LocalPerformanceQuality.current
@@ -163,10 +307,10 @@ object BrainBufferThemeTokens {
         @ReadOnlyComposable
         get() = LocalAppInForeground.current
 
-    val glass: com.example.ui.components.LiquidGlassTokens
+    val glass: LiquidGlassTokens
         @Composable
         @ReadOnlyComposable
-        get() = com.example.ui.components.LocalLiquidGlassTokens.current
+        get() = LocalLiquidGlassTokens.current
 
     val blurController: AdaptiveBlurController
         @Composable
@@ -191,11 +335,60 @@ private fun animateThemeColor(target: Color, durationMs: Int): Color {
 }
 
 @Composable
+private fun animateColorScheme(target: ColorScheme, durationMs: Int): ColorScheme {
+    if (durationMs <= 0) return target
+    return target.copy(
+        primary = animateThemeColor(target.primary, durationMs),
+        onPrimary = animateThemeColor(target.onPrimary, durationMs),
+        primaryContainer = animateThemeColor(target.primaryContainer, durationMs),
+        onPrimaryContainer = animateThemeColor(target.onPrimaryContainer, durationMs),
+        secondary = animateThemeColor(target.secondary, durationMs),
+        secondaryContainer = animateThemeColor(target.secondaryContainer, durationMs),
+        tertiary = animateThemeColor(target.tertiary, durationMs),
+        tertiaryContainer = animateThemeColor(target.tertiaryContainer, durationMs),
+        background = animateThemeColor(target.background, durationMs),
+        onBackground = animateThemeColor(target.onBackground, durationMs),
+        surface = animateThemeColor(target.surface, durationMs),
+        onSurface = animateThemeColor(target.onSurface, durationMs),
+        surfaceVariant = animateThemeColor(target.surfaceVariant, durationMs),
+        onSurfaceVariant = animateThemeColor(target.onSurfaceVariant, durationMs),
+        surfaceContainerLowest = animateThemeColor(target.surfaceContainerLowest, durationMs),
+        surfaceContainerLow = animateThemeColor(target.surfaceContainerLow, durationMs),
+        surfaceContainer = animateThemeColor(target.surfaceContainer, durationMs),
+        surfaceContainerHigh = animateThemeColor(target.surfaceContainerHigh, durationMs),
+        surfaceContainerHighest = animateThemeColor(target.surfaceContainerHighest, durationMs),
+        outline = animateThemeColor(target.outline, durationMs),
+        outlineVariant = animateThemeColor(target.outlineVariant, durationMs)
+    )
+}
+
+@Composable
+private fun animateGlassSurfaceColors(
+    target: LiquidGlassSurfaceColors,
+    durationMs: Int
+): LiquidGlassSurfaceColors {
+    if (durationMs <= 0) return target
+    return target.copy(
+        canvas = animateThemeColor(target.canvas, durationMs),
+        glassBase = animateThemeColor(target.glassBase, durationMs),
+        glassSubtle = animateThemeColor(target.glassSubtle, durationMs),
+        glassElevated = animateThemeColor(target.glassElevated, durationMs),
+        glassAccent = animateThemeColor(target.glassAccent, durationMs),
+        specularBorderTop = animateThemeColor(target.specularBorderTop, durationMs),
+        specularBorderBottom = animateThemeColor(target.specularBorderBottom, durationMs),
+        hairlineDivider = animateThemeColor(target.hairlineDivider, durationMs)
+    )
+}
+
+// ============================================================================
+// Root Theme Composables
+// ============================================================================
+
+@Composable
 fun BrainBufferTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     reducedMotionOverride: Boolean = false,
-    performanceOverride: com.example.performance.PerformanceProfileOverride =
-        com.example.performance.PerformanceProfileOverride.AUTO,
+    performanceOverride: PerformanceProfileOverride = PerformanceProfileOverride.AUTO,
     isAppInForeground: Boolean = true,
     content: @Composable () -> Unit
 ) {
@@ -219,8 +412,7 @@ fun BrainBufferTheme(
 fun BrainBufferTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     reducedMotionOverride: Boolean = false,
-    performanceOverride: com.example.performance.PerformanceProfileOverride =
-        com.example.performance.PerformanceProfileOverride.AUTO,
+    performanceOverride: PerformanceProfileOverride = PerformanceProfileOverride.AUTO,
     isAppInForeground: Boolean = true,
     content: @Composable () -> Unit
 ) {
@@ -238,41 +430,44 @@ fun BrainBufferTheme(
         }
     }
     val reducedMotion = reducedMotionOverride || systemReducedMotion
+
     val deviceSignals = remember(context) {
-        com.example.performance.PerformanceProfileEngine.inspectDevice(context)
+        PerformanceProfileEngine.inspectDevice(context)
     }
     val resolvedProfile = remember(deviceSignals, performanceOverride) {
-        com.example.performance.PerformanceProfileEngine.resolveProfile(deviceSignals, performanceOverride)
+        PerformanceProfileEngine.resolveProfile(deviceSignals, performanceOverride)
     }
     val renderQuality = remember(resolvedProfile, reducedMotion) {
-        com.example.performance.RenderQualityTokens.forProfile(
+        RenderQualityTokens.forProfile(
             profile = resolvedProfile,
             reducedMotion = reducedMotion
         )
     }
-    val animMs = renderQuality.transitionDurationMs
+    val animMs = if (reducedMotion) 0 else renderQuality.transitionDurationMs
 
-    val targetScheme = if (darkTheme) BrainBufferDarkColorScheme else BrainBufferLightColorScheme
-    val animatedScheme = targetScheme.copy(
-        background = animateThemeColor(targetScheme.background, animMs),
-        surface = animateThemeColor(targetScheme.surface, animMs),
-        surfaceVariant = animateThemeColor(targetScheme.surfaceVariant, animMs),
-        surfaceContainerLow = animateThemeColor(targetScheme.surfaceContainerLow, animMs),
-        surfaceContainer = animateThemeColor(targetScheme.surfaceContainer, animMs),
-        surfaceContainerHigh = animateThemeColor(targetScheme.surfaceContainerHigh, animMs),
-        onBackground = animateThemeColor(targetScheme.onBackground, animMs),
-        onSurface = animateThemeColor(targetScheme.onSurface, animMs),
-        onSurfaceVariant = animateThemeColor(targetScheme.onSurfaceVariant, animMs),
-        primary = animateThemeColor(targetScheme.primary, animMs),
-        primaryContainer = animateThemeColor(targetScheme.primaryContainer, animMs)
-    )
+    val targetScheme = if (darkTheme) AmoledLiquidGlassColorScheme else LightLiquidGlassColorScheme
+    val animatedScheme = animateColorScheme(target = targetScheme, durationMs = animMs)
 
-    val targetExtended = if (darkTheme) DarkExtendedColors else LightExtendedColors
-    val animatedExtended = targetExtended.copy(
-        secondaryBackground = animateThemeColor(targetExtended.secondaryBackground, animMs),
-        cardBorder = animateThemeColor(targetExtended.cardBorder, animMs),
-        navBarSurface = animateThemeColor(targetExtended.navBarSurface, animMs),
-        navBarBorder = animateThemeColor(targetExtended.navBarBorder, animMs)
+    val targetExtended = if (darkTheme) HighContrastDarkExtendedColors else LightExtendedColors
+    val animatedExtended = if (animMs <= 0) {
+        targetExtended
+    } else {
+        targetExtended.copy(
+            secondaryBackground = animateThemeColor(targetExtended.secondaryBackground, animMs),
+            cardBorder = animateThemeColor(targetExtended.cardBorder, animMs),
+            navBarSurface = animateThemeColor(targetExtended.navBarSurface, animMs),
+            navBarBorder = animateThemeColor(targetExtended.navBarBorder, animMs)
+        )
+    }
+
+    val targetGlassSurface = if (darkTheme) {
+        AmoledLiquidGlassSurfaceColors
+    } else {
+        LightLiquidGlassSurfaceColors
+    }
+    val animatedGlassSurface = animateGlassSurfaceColors(
+        target = targetGlassSurface,
+        durationMs = animMs
     )
 
     val view = LocalView.current
@@ -315,7 +510,7 @@ fun BrainBufferTheme(
     )
 
     val liquidGlassTokens = remember(darkTheme, renderQuality, reducedMotion, blurState.navBlurRadiusDp) {
-        com.example.ui.components.LiquidGlassTokens.resolve(
+        LiquidGlassTokens.resolve(
             isDark = darkTheme,
             renderQuality = renderQuality,
             reducedMotion = reducedMotion,
@@ -325,13 +520,14 @@ fun BrainBufferTheme(
 
     CompositionLocalProvider(
         LocalBrainBufferColors provides animatedExtended,
+        LocalLiquidGlassSurfaceColors provides animatedGlassSurface,
         LocalBrainBufferTextStyles provides DefaultBrainBufferTextStyles,
         LocalReducedMotion provides reducedMotion,
         LocalPerformanceQuality provides renderQuality,
         LocalAppInForeground provides isAppInForeground,
         LocalAdaptiveBlurController provides blurController,
         LocalAdaptiveBlurState provides blurState,
-        com.example.ui.components.LocalLiquidGlassTokens provides liquidGlassTokens
+        LocalLiquidGlassTokens provides liquidGlassTokens
     ) {
         MaterialTheme(
             colorScheme = animatedScheme,

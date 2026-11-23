@@ -77,6 +77,7 @@ import com.example.model.GardenDecoration
 import com.example.model.GardenPlant
 import com.example.model.PlantSpecies
 import com.example.model.PlantStage
+import com.example.performance.PerformanceProfile
 import com.example.ui.components.EmptySanctuaryCard
 import com.example.ui.components.LiquidGlassButton
 import com.example.ui.components.LiquidGlassCard
@@ -190,13 +191,14 @@ fun GardenScreen(
 
                 if (feedbackMessage != null) {
                     item {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer,
+                        LiquidGlassCard(
+                            tone = LiquidGlassTone.ACCENT,
+                            cornerRadius = 16.dp,
+                            borderAccent = MaterialTheme.colorScheme.secondary,
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 11.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -209,7 +211,7 @@ fun GardenScreen(
                                 Text(
                                     text = feedbackMessage ?: "",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
                         }
@@ -637,7 +639,12 @@ private fun MyStudyGardenCanvas(
     val reducedMotion = BrainBufferThemeTokens.reducedMotion
     val renderQuality = BrainBufferThemeTokens.renderQuality
     val isAppInForeground = BrainBufferThemeTokens.isAppInForeground
-    val animateCanvas = !reducedMotion && renderQuality.enableContinuousCanvasMotion && isAppInForeground
+    val animateCanvas = !reducedMotion &&
+        renderQuality.enableContinuousCanvasMotion &&
+        renderQuality.profile != PerformanceProfile.PERFORMANCE &&
+        isAppInForeground
+    val farHillPath = remember { Path() }
+    val nearHillPath = remember { Path() }
 
     val swayPhase = if (animateCanvas) {
         val transition = rememberInfiniteTransition(label = "gardenSway")
@@ -750,26 +757,24 @@ private fun MyStudyGardenCanvas(
             }
 
             // Distant hill
-            val farHill = Path().apply {
-                moveTo(0f, h * 0.70f)
-                quadraticTo(w * 0.30f, h * 0.56f, w * 0.60f, h * 0.68f)
-                quadraticTo(w * 0.84f, h * 0.76f, w, h * 0.64f)
-                lineTo(w, h)
-                lineTo(0f, h)
-                close()
-            }
-            drawPath(farHill, color = extended.gardenHillFar)
+            farHillPath.reset()
+            farHillPath.moveTo(0f, h * 0.70f)
+            farHillPath.quadraticTo(w * 0.30f, h * 0.56f, w * 0.60f, h * 0.68f)
+            farHillPath.quadraticTo(w * 0.84f, h * 0.76f, w, h * 0.64f)
+            farHillPath.lineTo(w, h)
+            farHillPath.lineTo(0f, h)
+            farHillPath.close()
+            drawPath(farHillPath, color = extended.gardenHillFar)
 
             // Foreground hill
-            val nearHill = Path().apply {
-                moveTo(0f, h * 0.79f)
-                quadraticTo(w * 0.36f, h * 0.69f, w * 0.70f, h * 0.78f)
-                quadraticTo(w * 0.88f, h * 0.83f, w, h * 0.75f)
-                lineTo(w, h)
-                lineTo(0f, h)
-                close()
-            }
-            drawPath(nearHill, color = extended.gardenHillNear)
+            nearHillPath.reset()
+            nearHillPath.moveTo(0f, h * 0.79f)
+            nearHillPath.quadraticTo(w * 0.36f, h * 0.69f, w * 0.70f, h * 0.78f)
+            nearHillPath.quadraticTo(w * 0.88f, h * 0.83f, w, h * 0.75f)
+            nearHillPath.lineTo(w, h)
+            nearHillPath.lineTo(0f, h)
+            nearHillPath.close()
+            drawPath(nearHillPath, color = extended.gardenHillNear)
 
             // Unlocked Stepping Stones decoration
             if (GardenDecoration.STEPPING_STONES.key in unlockedDecorations) {

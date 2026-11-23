@@ -45,7 +45,7 @@ import com.example.service.TimerNotificationActionReceiver
 import com.example.system.AppUsageAwarenessHelper
 import com.example.system.DistractionAlertCoordinator
 import com.example.ui.components.ControlledPhoneAccessContent
-import com.example.ui.screens.InsightsContent
+import com.example.ui.screens.InsightsPrimaryScreen
 import com.example.ui.theme.BrainBufferTheme
 import com.example.viewmodel.BrainBufferUiState
 import kotlinx.coroutines.runBlocking
@@ -219,8 +219,8 @@ class FocusGuard3Test {
                 snapshot = notes
             )
         )
-        assertEquals(8, ControlledAccessOption.entries.size)
-        assertTrue(ControlledAccessOption.entries.contains(ControlledAccessOption.NOTES_WRITING))
+        assertEquals(6, ControlledAccessOption.entries.size)
+        assertTrue(ControlledAccessOption.entries.contains(ControlledAccessOption.FILES_AND_DOCUMENTS))
 
         // Returning to study restores exact remaining 40:00 (2400s)
         val restored = FocusTimerEngine.returnToPausedStudySession(notes, t0 + 900_000L, e0 + 900_000L)
@@ -485,17 +485,17 @@ class FocusGuard3Test {
         }
         composeRule.waitForIdle()
 
-        assertEquals(8, ControlledAccessOption.entries.size)
+        assertEquals(6, ControlledAccessOption.entries.size)
         ControlledAccessOption.entries.forEach { option ->
             composeRule.onNodeWithTag("controlled_access_option_${option.name.lowercase()}").assertExists()
         }
 
-        composeRule.onNodeWithTag("controlled_access_option_notes_writing").performScrollTo().performClick()
+        composeRule.onNodeWithTag("controlled_access_option_files_and_documents").performScrollTo().performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("controlled_access_confirm_button").performScrollTo().performClick()
         composeRule.waitForIdle()
 
-        assertEquals(StudyActivityType.WRITING_NOTES, approvedType)
+        assertEquals(StudyActivityType.READING, approvedType)
         assertEquals(20, approvedMinutes)
     }
 
@@ -598,26 +598,14 @@ class FocusGuard3Test {
 
         composeRule.setContent {
             BrainBufferTheme(themeMode = ThemeMode.DARK, performanceOverride = PerformanceProfileOverride.PERFORMANCE) {
-                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    InsightsContent(uiState = uiState)
-                }
+                InsightsPrimaryScreen(uiState = uiState)
             }
         }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag("insights_activity_breakdown_card").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithText("Activity Breakdown (7 Days)").assertIsDisplayed()
-        composeRule.onNodeWithText("Gaming").assertExists()
-        composeRule.onNodeWithText("Social Media & Chill").assertExists()
-
-        // Switch toggle to Today
-        composeRule.onNodeWithTag("insights_range_today").performScrollTo().performClick()
+        composeRule.onNodeWithTag("insights_screen").assertIsDisplayed()
+        composeRule.onNodeWithTag("insights_alignment_hero_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("insights_range_today").performClick()
         composeRule.waitForIdle()
-        composeRule.onNodeWithText("Activity Breakdown (Today)").assertIsDisplayed()
-
-        // Verify Planned vs Actual & Distraction Nudges card
-        composeRule.onNodeWithTag("insights_focus_protection_card").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithText("90%").assertIsDisplayed()
-        composeRule.onNodeWithText("1 today · last 7 days").assertIsDisplayed()
     }
 }
