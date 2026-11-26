@@ -9,6 +9,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.example.audio.FocusCompletionSoundPlayer
 import com.example.data.BrainBufferRepository
 import com.example.domain.FocusTimerEngine
 import com.example.domain.PurposeMatchingEngine
@@ -231,7 +232,10 @@ class FocusTimerService : Service() {
                     }
                 }
 
-                val currentBlockedApps = if (usageGranted) repository.getBlockedAppsOnce() else emptyList()
+                val needsBlocklistQuery = usageGranted && (
+                    manualActiveNow || (timerRunningNow && latestPrefs.focusGuardSettings.blockDuringActiveFocus)
+                )
+                val currentBlockedApps = if (needsBlocklistQuery) repository.getBlockedAppsOnce() else emptyList()
                 val hasActiveBlocklistRules = (timerRunningNow &&
                     latestPrefs.focusGuardSettings.blockDuringActiveFocus &&
                     currentBlockedApps.any { it.isBlockedFor(latest.focusGuardLevel) }) ||
@@ -256,7 +260,11 @@ class FocusTimerService : Service() {
                     else -> 30_000L
                 }
                 val sleepMs = if (timerRunningNow) {
-                    minOf(baseIntervalMs, (remainingSec * 1000L).coerceAtLeast(1_000L))
+                    val remainingMs = (
+                        latest.totalSeconds.toLong() * 1000L -
+                            FocusTimerEngine.elapsedFocusedMs(latest, epochNow, elapsedNow)
+                        ).coerceAtLeast(250L)
+                    minOf(baseIntervalMs, remainingMs)
                 } else {
                     baseIntervalMs
                 }
@@ -602,6 +610,11 @@ class FocusTimerService : Service() {
             context = appContext,
             event = HapticEvent.SESSION_COMPLETE,
             enabled = prefs.hapticsEnabled
+        )
+        FocusCompletionSoundPlayer.playCompletionChime(
+            context = appContext,
+            sessionId = sessionKey,
+            enabled = prefs.soundEnabled
         )
 
         // Fire deduplicated completion / break / activity reminder notification

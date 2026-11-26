@@ -309,19 +309,38 @@ object BrainBufferNotificationManager {
             }
         }
 
-        // Public lock-screen version NEVER exposes private study goals or notes.
-        val publicNotification = NotificationCompat.Builder(context, CHANNEL_ACTIVE_FOCUS)
+        val sessionDisplayName = snapshot.sessionGoal.trim().ifBlank { snapshot.activeActivityLabel }
+        val lockScreenLabel = if (prefs.hidePrivateNotesOnLockScreen) {
+            snapshot.activeActivityLabel
+        } else {
+            sessionDisplayName
+        }
+
+        // Public lock-screen version respects the user's privacy setting while showing remaining time.
+        val publicBuilder = NotificationCompat.Builder(context, CHANNEL_ACTIVE_FOCUS)
             .setSmallIcon(R.drawable.ic_stat_brain_buffer)
-            .setContentTitle("BRAIN BUFFER LIVE · $statusPrefix")
-            .setContentText(
-                if (isRunning) "${snapshot.activeActivityLabel} · $remainingFormatted remaining"
-                else "${snapshot.activeActivityLabel} paused · $remainingFormatted left"
+            .setContentTitle(
+                if (isRunning) "BRAIN BUFFER · $lockScreenLabel"
+                else "BRAIN BUFFER · $lockScreenLabel (Paused)"
             )
-            .setOngoing(isRunning)
+            .setContentText(
+                if (isRunning) "$remainingFormatted remaining"
+                else "Paused · $remainingFormatted remaining"
+            )
+            .setOngoing(snapshot.hasStarted)
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setProgress(totalSec, elapsedSec.coerceIn(0, totalSec), false)
-            .build()
+        if (isRunning && remainingSec > 0) {
+            publicBuilder
+                .setShowWhen(true)
+                .setWhen(nowEpochMs + remainingSec * 1000L)
+                .setUsesChronometer(true)
+                .setChronometerCountDown(true)
+        } else {
+            publicBuilder.setShowWhen(false)
+        }
+        val publicNotification = publicBuilder.build()
 
         val openRoute = if (snapshot.isStrictFocus) "strict_focus" else "focus"
         val openIntent = Intent(context, MainActivity::class.java).apply {
@@ -349,11 +368,13 @@ object BrainBufferNotificationManager {
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ACTIVE_FOCUS)
             .setSmallIcon(R.drawable.ic_stat_brain_buffer)
-            .setContentTitle(title)
+            .setContentTitle(
+                if (isRunning) sessionDisplayName else "$sessionDisplayName · Paused"
+            )
             .setContentText(privateDetail)
             .setSubText(if (snapshot.isSwitchedActivity) "Study paused · $statusPrefix" else statusPrefix)
             .setContentIntent(contentPendingIntent)
-            .setOngoing(isRunning)
+            .setOngoing(snapshot.hasStarted)
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
@@ -412,10 +433,10 @@ object BrainBufferNotificationManager {
             )
         }
 
-        // Action 3: Finish
+        // Action 3: End Session
         builder.addAction(
             0,
-            "Finish",
+            "End",
             buildActionPendingIntent(context, TimerNotificationActionReceiver.ACTION_END, 3004)
         )
 

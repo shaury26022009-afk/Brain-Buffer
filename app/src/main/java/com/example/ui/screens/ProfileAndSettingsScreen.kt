@@ -69,6 +69,7 @@ import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.StrokeCap
+import com.example.audio.FocusCompletionSoundPlayer
 import com.example.audio.LocalAmbientSoundscapeController
 import com.example.domain.DailyFocusGoalProgress
 import com.example.domain.IntentRealityAnalyticsEngine
@@ -626,10 +627,11 @@ fun ProfileScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = "Ambient focus soundscape",
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Rain, Brown noise, Pink noise, Gentle ambience, or Off",
+                                    text = "12 offline nature, noise & instrumental soundscapes",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -641,9 +643,12 @@ fun ProfileScreen(
                         }
                         SettingsToggleRow(
                             title = "Alert sounds",
-                            subtitle = "Play soft tones for session end and temporary access expiry",
+                            subtitle = "Play a calm chime when a focus timer finishes",
                             checked = prefs.soundEnabled,
                             onCheckedChange = { enabled ->
+                                if (enabled) {
+                                    FocusCompletionSoundPlayer.playPreview(context)
+                                }
                                 onUpdateAppSettings(
                                     prefs.notificationsEnabled,
                                     prefs.breakRemindersEnabled,
@@ -838,7 +843,8 @@ fun ProfileScreen(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = uiState.cloudSync.session.email.ifBlank { "Connected account" },
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
                                         text = "Cloud sync enabled",
@@ -883,7 +889,8 @@ fun ProfileScreen(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = "Guest mode (local-first)",
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
                                         text = "No account required. Sign in optionally for backup.",
@@ -914,6 +921,8 @@ fun ProfileScreen(
             onTogglePlayPause = { soundscapeController.togglePlayPause() },
             onVolumeChange = { soundscapeController.setVolume(it) },
             onSyncWithTimerChange = { soundscapeController.setSyncWithTimer(it) },
+            onTogglePreview = { soundscapeController.togglePreview(it) },
+            onStopPreview = { soundscapeController.stopPreview() },
             onDismiss = { showSoundscapeSheet = false }
         )
     }
@@ -930,7 +939,10 @@ fun ProfileScreen(
                         onClearAllData()
                         feedbackBanner = "Local focus data cleared."
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
                 ) {
                     Text("Clear Data")
                 }
@@ -952,7 +964,10 @@ fun ProfileScreen(
                         showDeleteAccountDialog = false
                         onDeleteAccount { _, msg -> feedbackBanner = msg }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
                 ) {
                     Text("Delete")
                 }

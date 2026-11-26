@@ -396,13 +396,17 @@ fun AdaptiveBlurFrameMonitor(
         blurState.tier != BlurPerformanceTier.LOW &&
         !blurState.isPowerSaveMode
 
-    DisposableEffect(controller, shouldMonitor) {
+    DisposableEffect(controller, shouldMonitor, blurState.thermalStatus) {
         if (!shouldMonitor) {
             return@DisposableEffect onDispose { }
         }
         val choreographer = runCatching { Choreographer.getInstance() }.getOrNull()
             ?: return@DisposableEffect onDispose { }
 
+        // Sample a bounded burst of frames upon foreground entry or thermal shift
+        // rather than keeping Choreographer awake continuously at 60–120Hz while idle.
+        val maxSampleFrames = AdaptiveBlurPolicy.WINDOW_FRAME_COUNT + 1
+        var sampledFrames = 0
         var lastFrameTimeNanos = 0L
         var active = true
 
@@ -414,8 +418,11 @@ fun AdaptiveBlurFrameMonitor(
                     controller.recordFrameDurationMs(deltaMs)
                 }
                 lastFrameTimeNanos = frameTimeNanos
-                if (active) {
+                sampledFrames++
+                if (active && sampledFrames < maxSampleFrames) {
                     choreographer.postFrameCallback(this)
+                } else {
+                    active = false
                 }
             }
         }

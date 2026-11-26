@@ -6,11 +6,13 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,16 +35,20 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Work
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -59,6 +65,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,7 +75,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -76,6 +85,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.model.AppCategoryMapping
 import com.example.model.BlockedAppRule
 import com.example.model.CloudSyncState
+import com.example.domain.DailyFocusGoalProgress
 import com.example.model.FocusGuardSettings
 import com.example.model.NotificationPreferences
 import com.example.model.PreferredStudyTime
@@ -95,12 +105,39 @@ import com.example.ui.theme.LocalAdaptiveMetrics
 
 private const val TOTAL_ONBOARDING_STEPS = 4
 
+private fun isValidOnboardingEmail(raw: String): Boolean {
+    val trimmed = raw.trim()
+    val atIdx = trimmed.indexOf('@')
+    if (atIdx <= 0) return false
+    val domain = trimmed.substring(atIdx + 1)
+    return domain.length >= 3 && domain.contains('.') && !domain.startsWith('.') && !domain.endsWith('.')
+}
+
+private fun defaultPurposeForRole(role: UserProfileRole): SessionPurposeCategory = when (role) {
+    UserProfileRole.PROFESSIONAL -> SessionPurposeCategory.WORK
+    UserProfileRole.PERSONAL -> SessionPurposeCategory.PERSONAL_TASK
+    else -> SessionPurposeCategory.STUDY
+}
+
+private fun restoreSelectedPurposes(prefs: UserPreferences): Set<SessionPurposeCategory> {
+    val restored = prefs.studyGoals.mapNotNull { goal ->
+        SessionPurposeCategory.entries.firstOrNull {
+            it.label.equals(goal, ignoreCase = true) || it.name.equals(goal, ignoreCase = true)
+        }
+    }.toSet()
+    if (restored.isNotEmpty()) return restored
+    return setOf(prefs.focusGuardSettings.defaultPurposeCategory)
+}
+
 /**
  * Concise 4-step Purpose-Aware Onboarding:
  * 0. User Type (Student, Working Professional, Personal Productivity) + optional name
- * 1. Preferred Purpose Categories + optional daily focus goal
+ * 1. Preferred Purpose Categories + optional daily focus goal & default session duration
  * 2. Transparent Permission Explanations (Usage Access + Notifications — both optional)
- * 3. Optional Account (Continue as Guest default or Email when configured)
+ * 3. Optional Account (Continue as Guest default or Email/Password when Supabase is configured)
+ *
+ * All choices persist continuously to DataStore so closing the app, rotating the device,
+ * or returning from Android System Usage Access Settings preserves every selection cleanly.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -111,6 +148,14 @@ fun OnboardingScreen(
     appCategoryMappings: List<AppCategoryMapping>,
     cloudSync: CloudSyncState,
     onStepChanged: (Int) -> Unit,
+    onSaveDraft: (
+        step: Int,
+        userRole: UserProfileRole,
+        studentName: String,
+        selectedPurposes: Set<SessionPurposeCategory>,
+        dailyTargetMinutes: Int,
+        preferredFocusMinutes: Int
+    ) -> Unit = { step, _, _, _, _, _ -> onStepChanged(step) },
     onSignIn: (email: String, password: String) -> Unit,
     onSignUp: (email: String, password: String, displayName: String) -> Unit,
     onResetPassword: (email: String) -> Unit,
@@ -142,35 +187,56 @@ fun OnboardingScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val adaptive = LocalAdaptiveMetrics.current
+    val scrollState = rememberScrollState()
 
-    var currentStep by remember {
+    var currentStep by rememberSaveable {
         mutableIntStateOf(existingPreferences.onboardingCurrentStep.coerceIn(0, TOTAL_ONBOARDING_STEPS - 1))
     }
-    LaunchedEffect(currentStep) {
-        onStepChanged(currentStep)
+
+    var selectedRoleName by rememberSaveable { mutableStateOf(existingPreferences.userRole.name) }
+    val selectedRole = UserProfileRole.entries.firstOrNull { it.name == selectedRoleName } ?: UserProfileRole.STUDENT
+
+    var displayName by rememberSaveable { mutableStateOf(existingPreferences.studentName.take(36)) }
+    var selectedPurposeNames by rememberSaveable {
+        mutableStateOf(
+            restoreSelectedPurposes(existingPreferences).map { it.name }
+        )
+    }
+    val selectedPurposes = remember(selectedPurposeNames, selectedRole) {
+        selectedPurposeNames.mapNotNull { name ->
+            SessionPurposeCategory.entries.firstOrNull { it.name == name }
+        }.toSet().ifEmpty { setOf(defaultPurposeForRole(selectedRole)) }
     }
 
-    var selectedRole by remember { mutableStateOf(existingPreferences.userRole) }
-    var displayName by remember { mutableStateOf(existingPreferences.studentName) }
-    var selectedPurposes by remember {
-        mutableStateOf(
-            setOf(
-                when (existingPreferences.userRole) {
-                    UserProfileRole.PROFESSIONAL -> SessionPurposeCategory.WORK
-                    UserProfileRole.PERSONAL -> SessionPurposeCategory.PERSONAL_TASK
-                    else -> SessionPurposeCategory.STUDY
-                }
+    var dailyGoalMinutes by rememberSaveable {
+        mutableIntStateOf(
+            existingPreferences.dailyTargetMinutes.coerceIn(
+                DailyFocusGoalProgress.MIN_GOAL_MINUTES,
+                DailyFocusGoalProgress.MAX_GOAL_MINUTES
             )
         )
     }
-    var dailyGoalMinutes by remember {
-        mutableIntStateOf(existingPreferences.dailyTargetMinutes.coerceIn(30, 240))
-    }
-    var defaultFocusMinutes by remember {
+    var defaultFocusMinutes by rememberSaveable {
         mutableIntStateOf(existingPreferences.preferredFocusMinutes.coerceIn(15, 90))
     }
 
-    // Live permission state refreshed on resume
+    fun persistDraft(targetStep: Int = currentStep) {
+        onSaveDraft(
+            targetStep,
+            selectedRole,
+            displayName.trim().take(36),
+            selectedPurposes,
+            dailyGoalMinutes,
+            defaultFocusMinutes
+        )
+    }
+
+    LaunchedEffect(currentStep) {
+        scrollState.scrollTo(0)
+        persistDraft(currentStep)
+    }
+
+    // Live permission state refreshed on resume (never requested automatically)
     var hasUsageAccess by remember { mutableStateOf(AppUsageAwarenessHelper.hasUsageStatsPermission(context)) }
     var hasNotifications by remember { mutableStateOf(BrainBufferNotificationManager.hasNotificationPermission(context)) }
     val notificationLauncher = rememberLauncherForActivityResult(
@@ -190,17 +256,21 @@ fun OnboardingScreen(
     }
 
     // Optional email auth fields on Step 3
-    var showEmailForm by remember { mutableStateOf(false) }
-    var isSignUpMode by remember { mutableStateOf(true) }
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    var showEmailForm by rememberSaveable { mutableStateOf(false) }
+    var isSignUpMode by rememberSaveable { mutableStateOf(true) }
+    var email by rememberSaveable { mutableStateOf(cloudSync.session.email) }
+    var password by rememberSaveable { mutableStateOf("") }
+    var confirmPassword by rememberSaveable { mutableStateOf("") }
+    var showPassword by rememberSaveable { mutableStateOf(false) }
 
     BackHandler(enabled = currentStep > 0) {
-        currentStep = (currentStep - 1).coerceAtLeast(0)
+        val prev = (currentStep - 1).coerceAtLeast(0)
+        persistDraft(prev)
+        currentStep = prev
     }
 
     fun finishOnboarding() {
-        val primaryPurpose = selectedPurposes.firstOrNull() ?: SessionPurposeCategory.STUDY
+        val primaryPurpose = selectedPurposes.firstOrNull() ?: defaultPurposeForRole(selectedRole)
         val studyLevel = when (selectedRole) {
             UserProfileRole.PROFESSIONAL -> StudyLevel.OTHER
             UserProfileRole.PERSONAL -> StudyLevel.SELF_LEARNING
@@ -212,7 +282,7 @@ fun OnboardingScreen(
         )
         onCompleteFull(
             selectedRole,
-            displayName.trim(),
+            displayName.trim().take(36),
             existingPreferences.avatarKey,
             studyLevel,
             existingPreferences.courseOrExamName,
@@ -258,8 +328,19 @@ fun OnboardingScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     if (currentStep > 0) {
-                        IconButton(onClick = { currentStep-- }) {
-                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Previous step")
+                        IconButton(
+                            onClick = {
+                                val prev = (currentStep - 1).coerceAtLeast(0)
+                                persistDraft(prev)
+                                currentStep = prev
+                            },
+                            modifier = Modifier.testTag("onboarding_back_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = "Previous step",
+                                tint = MaterialTheme.colorScheme.onBackground
+                            )
                         }
                     } else {
                         Spacer(modifier = Modifier.width(48.dp))
@@ -267,9 +348,13 @@ fun OnboardingScreen(
                     Text(
                         text = "Step ${currentStep + 1} of $TOTAL_ONBOARDING_STEPS",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.testTag("onboarding_step_label")
                     )
-                    TextButton(onClick = { finishOnboarding() }) {
+                    TextButton(
+                        onClick = { finishOnboarding() },
+                        modifier = Modifier.testTag("onboarding_skip_button")
+                    ) {
                         Text("Skip")
                     }
                 }
@@ -277,6 +362,7 @@ fun OnboardingScreen(
                 LinearProgressIndicator(
                     progress = { (currentStep + 1f) / TOTAL_ONBOARDING_STEPS.toFloat() },
                     strokeCap = StrokeCap.Round,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(6.dp)
@@ -288,7 +374,7 @@ fun OnboardingScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .verticalScroll(rememberScrollState())
+                        .verticalScroll(scrollState)
                 ) {
                     AnimatedContent(
                         targetState = currentStep,
@@ -320,8 +406,10 @@ fun OnboardingScreen(
                                     subtitle = "School, college, university, or exam preparation",
                                     selected = selectedRole == UserProfileRole.STUDENT,
                                     onClick = {
-                                        selectedRole = UserProfileRole.STUDENT
-                                        selectedPurposes = setOf(SessionPurposeCategory.STUDY)
+                                        if (selectedRole != UserProfileRole.STUDENT) {
+                                            selectedRoleName = UserProfileRole.STUDENT.name
+                                            selectedPurposeNames = listOf(SessionPurposeCategory.STUDY.name)
+                                        }
                                     },
                                     tag = "onboarding_role_student"
                                 )
@@ -331,8 +419,10 @@ fun OnboardingScreen(
                                     subtitle = "Deep work, office tasks, meetings, and focus blocks",
                                     selected = selectedRole == UserProfileRole.PROFESSIONAL,
                                     onClick = {
-                                        selectedRole = UserProfileRole.PROFESSIONAL
-                                        selectedPurposes = setOf(SessionPurposeCategory.WORK)
+                                        if (selectedRole != UserProfileRole.PROFESSIONAL) {
+                                            selectedRoleName = UserProfileRole.PROFESSIONAL.name
+                                            selectedPurposeNames = listOf(SessionPurposeCategory.WORK.name)
+                                        }
                                     },
                                     tag = "onboarding_role_professional"
                                 )
@@ -342,19 +432,23 @@ fun OnboardingScreen(
                                     subtitle = "Mindful phone habits, reading, and intentional breaks",
                                     selected = selectedRole == UserProfileRole.PERSONAL,
                                     onClick = {
-                                        selectedRole = UserProfileRole.PERSONAL
-                                        selectedPurposes = setOf(SessionPurposeCategory.PERSONAL_TASK)
+                                        if (selectedRole != UserProfileRole.PERSONAL) {
+                                            selectedRoleName = UserProfileRole.PERSONAL.name
+                                            selectedPurposeNames = listOf(SessionPurposeCategory.PERSONAL_TASK.name)
+                                        }
                                     },
                                     tag = "onboarding_role_personal"
                                 )
 
                                 OutlinedTextField(
                                     value = displayName,
-                                    onValueChange = { displayName = it },
+                                    onValueChange = { displayName = it.take(36) },
                                     label = { Text("First name (optional)") },
                                     singleLine = true,
                                     shape = RoundedCornerShape(16.dp),
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("onboarding_name_input")
                                 )
                             }
 
@@ -378,7 +472,8 @@ fun OnboardingScreen(
                                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                         Text(
                                             text = "Preferred purposes",
-                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                         FlowRow(
                                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -390,12 +485,14 @@ fun OnboardingScreen(
                                                     label = cat.label,
                                                     selected = isChosen,
                                                     onClick = {
-                                                        selectedPurposes = if (isChosen && selectedPurposes.size > 1) {
+                                                        val updated = if (isChosen && selectedPurposes.size > 1) {
                                                             selectedPurposes - cat
                                                         } else {
                                                             selectedPurposes + cat
                                                         }
-                                                    }
+                                                        selectedPurposeNames = updated.map { it.name }
+                                                    },
+                                                    modifier = Modifier.testTag("onboarding_purpose_${cat.name.lowercase()}")
                                                 )
                                             }
                                         }
@@ -410,7 +507,8 @@ fun OnboardingScreen(
                                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                         Text(
                                             text = "Optional daily focus goal",
-                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                         FlowRow(
                                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -427,7 +525,8 @@ fun OnboardingScreen(
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
                                             text = "Default session duration",
-                                            style = MaterialTheme.typography.labelLarge
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                         FlowRow(
                                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -463,7 +562,10 @@ fun OnboardingScreen(
                                     explanation = "Used strictly at the app-package level to detect when you switch to an app outside your allowed list during a focus session. BRAIN BUFFER never reads messages, videos, websites, or screen content.",
                                     granted = hasUsageAccess,
                                     buttonLabel = "Open Usage Access",
-                                    onRequest = { AppUsageAwarenessHelper.openUsageAccessSettings(context) }
+                                    onRequest = {
+                                        persistDraft(currentStep)
+                                        AppUsageAwarenessHelper.openUsageAccessSettings(context)
+                                    }
                                 )
 
                                 PermissionExplainCard(
@@ -473,6 +575,7 @@ fun OnboardingScreen(
                                     granted = hasNotifications,
                                     buttonLabel = "Allow Notifications",
                                     onRequest = {
+                                        persistDraft(currentStep)
                                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                             notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                                         } else {
@@ -512,7 +615,8 @@ fun OnboardingScreen(
                                             Column {
                                                 Text(
                                                     text = "Signed in",
-                                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                                    color = MaterialTheme.colorScheme.onSurface
                                                 )
                                                 Text(
                                                     text = cloudSync.session.email.ifBlank { "Account connected" },
@@ -524,28 +628,60 @@ fun OnboardingScreen(
                                     }
                                 } else if (cloudSync.isConfigured) {
                                     if (!cloudSync.lastError.isNullOrBlank()) {
-                                        Text(
-                                            text = cloudSync.lastError,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.error
-                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(MaterialTheme.colorScheme.errorContainer)
+                                                .padding(12.dp)
+                                        ) {
+                                            Text(
+                                                text = cloudSync.lastError,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                        }
                                     }
                                     if (!cloudSync.authNotice.isNullOrBlank()) {
-                                        Text(
-                                            text = cloudSync.authNotice,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.secondary
-                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(MaterialTheme.colorScheme.secondaryContainer)
+                                                .padding(12.dp)
+                                        ) {
+                                            Text(
+                                                text = cloudSync.authNotice,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        }
                                     }
 
                                     OutlinedButton(
                                         onClick = { showEmailForm = !showEmailForm },
-                                        modifier = Modifier.fillMaxWidth()
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("onboarding_toggle_email_form")
                                     ) {
                                         Text(if (showEmailForm) "Hide email form" else "Sign in or create account with Email")
                                     }
 
                                     if (showEmailForm) {
+                                        val emailTrimmed = email.trim()
+                                        val emailInvalid = emailTrimmed.isNotEmpty() && !isValidOnboardingEmail(emailTrimmed)
+                                        val passwordTooShort = isSignUpMode && password.isNotEmpty() && password.length < 8
+                                        val passwordMismatch = isSignUpMode && confirmPassword.isNotEmpty() && password != confirmPassword
+                                        val canSubmitAuth = !cloudSync.isAuthBusy &&
+                                            isValidOnboardingEmail(emailTrimmed) &&
+                                            password.isNotBlank() &&
+                                            (!isSignUpMode || (password.length >= 8 && confirmPassword == password))
+                                        val showResend = isValidOnboardingEmail(emailTrimmed) && (
+                                            cloudSync.lastError.orEmpty().contains("confirm", ignoreCase = true) ||
+                                                cloudSync.authNotice.orEmpty().contains("verify", ignoreCase = true) ||
+                                                cloudSync.authNotice.orEmpty().contains("confirm", ignoreCase = true)
+                                            )
+
                                         LiquidGlassCard(
                                             modifier = Modifier.fillMaxWidth(),
                                             cornerRadius = 20.dp,
@@ -556,37 +692,111 @@ fun OnboardingScreen(
                                                     value = email,
                                                     onValueChange = { email = it },
                                                     label = { Text("Email") },
+                                                    isError = emailInvalid,
+                                                    supportingText = if (emailInvalid) {
+                                                        { Text("Enter a valid email address") }
+                                                    } else null,
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                                                     singleLine = true,
-                                                    modifier = Modifier.fillMaxWidth()
+                                                    shape = RoundedCornerShape(14.dp),
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .testTag("onboarding_email_input")
                                                 )
                                                 OutlinedTextField(
                                                     value = password,
                                                     onValueChange = { password = it },
                                                     label = { Text("Password") },
-                                                    visualTransformation = PasswordVisualTransformation(),
+                                                    isError = passwordTooShort,
+                                                    supportingText = if (isSignUpMode) {
+                                                        { Text("Minimum 8 characters") }
+                                                    } else null,
+                                                    trailingIcon = {
+                                                        IconButton(onClick = { showPassword = !showPassword }) {
+                                                            Icon(
+                                                                imageVector = if (showPassword) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                                                                contentDescription = if (showPassword) "Hide password" else "Show password"
+                                                            )
+                                                        }
+                                                    },
+                                                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                                                     singleLine = true,
-                                                    modifier = Modifier.fillMaxWidth()
+                                                    shape = RoundedCornerShape(14.dp),
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .testTag("onboarding_password_input")
                                                 )
+                                                AnimatedVisibility(visible = isSignUpMode) {
+                                                    OutlinedTextField(
+                                                        value = confirmPassword,
+                                                        onValueChange = { confirmPassword = it },
+                                                        label = { Text("Confirm Password") },
+                                                        isError = passwordMismatch,
+                                                        supportingText = if (passwordMismatch) {
+                                                            { Text("Passwords do not match") }
+                                                        } else null,
+                                                        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                                        singleLine = true,
+                                                        shape = RoundedCornerShape(14.dp),
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .testTag("onboarding_confirm_password_input")
+                                                    )
+                                                }
+                                                LiquidGlassButton(
+                                                    onClick = {
+                                                        onClearAuthNotice()
+                                                        if (isSignUpMode) {
+                                                            onSignUp(emailTrimmed, password, displayName.trim())
+                                                        } else {
+                                                            onSignIn(emailTrimmed, password)
+                                                        }
+                                                    },
+                                                    enabled = canSubmitAuth,
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .testTag("onboarding_auth_submit_button")
+                                                ) {
+                                                    if (cloudSync.isAuthBusy) {
+                                                        CircularProgressIndicator(
+                                                            modifier = Modifier.size(18.dp),
+                                                            strokeWidth = 2.dp,
+                                                            color = MaterialTheme.colorScheme.onPrimary
+                                                        )
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                    }
+                                                    Text(if (isSignUpMode) "Create Account" else "Sign In")
+                                                }
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth(),
                                                     horizontalArrangement = Arrangement.SpaceBetween,
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
-                                                    TextButton(onClick = { isSignUpMode = !isSignUpMode }) {
+                                                    TextButton(
+                                                        onClick = {
+                                                            isSignUpMode = !isSignUpMode
+                                                            onClearAuthNotice()
+                                                        },
+                                                        enabled = !cloudSync.isAuthBusy
+                                                    ) {
                                                         Text(if (isSignUpMode) "Already have an account?" else "Create account")
                                                     }
-                                                    LiquidGlassButton(
-                                                        onClick = {
-                                                            onClearAuthNotice()
-                                                            if (isSignUpMode) {
-                                                                onSignUp(email.trim(), password, displayName.trim())
-                                                            } else {
-                                                                onSignIn(email.trim(), password)
-                                                            }
-                                                        },
-                                                        enabled = email.isNotBlank() && password.length >= 6
-                                                    ) {
-                                                        Text(if (isSignUpMode) "Sign Up" else "Sign In")
+                                                    if (!isSignUpMode) {
+                                                        TextButton(
+                                                            onClick = { onResetPassword(emailTrimmed) },
+                                                            enabled = !cloudSync.isAuthBusy && isValidOnboardingEmail(emailTrimmed)
+                                                        ) {
+                                                            Text("Forgot password?")
+                                                        }
+                                                    } else if (showResend) {
+                                                        TextButton(
+                                                            onClick = { onResendVerification(emailTrimmed) },
+                                                            enabled = !cloudSync.isAuthBusy
+                                                        ) {
+                                                            Text("Resend email")
+                                                        }
                                                     }
                                                 }
                                             }
@@ -614,7 +824,9 @@ fun OnboardingScreen(
                 LiquidGlassButton(
                     onClick = {
                         if (currentStep < TOTAL_ONBOARDING_STEPS - 1) {
-                            currentStep++
+                            val next = currentStep + 1
+                            persistDraft(next)
+                            currentStep = next
                         } else {
                             finishOnboarding()
                         }
@@ -654,11 +866,11 @@ private fun RoleSelectionCard(
         color = if (selected) {
             MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
         } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+            MaterialTheme.colorScheme.surface
         },
         border = BorderStroke(
             width = if (selected) 1.5.dp else 1.dp,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
         ),
         modifier = Modifier
             .fillMaxWidth()

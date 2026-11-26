@@ -1,14 +1,20 @@
 package com.example.ui.screens
 
+import android.app.Activity
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -40,12 +46,13 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Coffee
 import androidx.compose.material.icons.rounded.ExitToApp
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.TaskAlt
 import androidx.compose.material.icons.rounded.WarningAmber
@@ -53,13 +60,17 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -70,18 +81,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import com.example.audio.LocalAmbientSoundscapeController
 import com.example.audio.SoundscapeState
 import com.example.domain.DailyFocusGoalProgress
@@ -95,16 +106,26 @@ import com.example.notifications.BrainBufferNotificationManager
 import com.example.system.AppLauncherHelper
 import com.example.system.AppUsageAwarenessHelper
 import com.example.system.InstalledAppChoice
+import com.example.ui.components.FocusModeSoundControlBar
 import com.example.ui.components.FocusSoundscapePill
 import com.example.ui.components.FocusSoundscapeSheet
+import com.example.ui.components.FocusTimerDisplay
 import com.example.ui.components.LiquidGlassButton
 import com.example.ui.components.LiquidGlassCard
 import com.example.ui.components.LiquidGlassChip
 import com.example.ui.components.LiquidGlassSecondaryButton
+import com.example.ui.components.LiquidGlassTokens
 import com.example.ui.components.LiquidGlassTone
+import com.example.ui.components.LocalLiquidGlassTokens
 import com.example.ui.components.SanctuaryBackdrop
+import com.example.ui.theme.AmoledLiquidGlassColorScheme
+import com.example.ui.theme.AmoledLiquidGlassSurfaceColors
+import com.example.ui.theme.BrainBufferThemeTokens
+import com.example.ui.theme.DarkExtendedColors
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.LocalAdaptiveMetrics
+import com.example.ui.theme.LocalBrainBufferColors
+import com.example.ui.theme.LocalLiquidGlassSurfaceColors
 import com.example.viewmodel.BrainBufferUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -150,7 +171,8 @@ fun FocusScreen(
     onAppSwitchRequestConsumed: () -> Unit = {},
     openChangePurposeImmediately: Boolean = false,
     onChangePurposeRequestConsumed: () -> Unit = {},
-    onUpdateDailyTargetMinutes: (Int) -> Unit = {}
+    onUpdateDailyTargetMinutes: (Int) -> Unit = {},
+    onMinimizeFocus: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val adaptive = LocalAdaptiveMetrics.current
@@ -184,20 +206,26 @@ fun FocusScreen(
         }
     }
 
-    SanctuaryBackdrop {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding(),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            AnimatedContent(
-                targetState = uiState.timer.hasStarted,
-                transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(180)) },
-                label = "focus_setup_vs_active"
-            ) { isActiveSession ->
-                if (!isActiveSession) {
+    AnimatedContent(
+        targetState = uiState.timer.hasStarted,
+        transitionSpec = {
+            (fadeIn(tween(260, easing = FastOutSlowInEasing)) +
+                scaleIn(initialScale = 0.97f, animationSpec = tween(260, easing = FastOutSlowInEasing))) togetherWith
+                (fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                    scaleOut(targetScale = 0.985f, animationSpec = tween(180, easing = FastOutSlowInEasing)))
+        },
+        modifier = Modifier.fillMaxSize(),
+        label = "focus_setup_vs_active"
+    ) { isActiveSession ->
+        if (!isActiveSession) {
+            SanctuaryBackdrop {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding(),
+                    contentAlignment = Alignment.TopCenter
+                ) {
                     FocusSetupContent(
                         uiState = uiState,
                         installedApps = installedApps,
@@ -210,33 +238,35 @@ fun FocusScreen(
                             .fillMaxSize()
                             .widthIn(max = adaptive.maxContentWidth)
                     )
-                } else {
-                    ActiveFocusSessionContent(
-                        uiState = uiState,
-                        soundscapeState = soundscapeState,
-                        onOpenSoundscape = { showSoundscapeSheet = true },
-                        onTogglePauseResume = onTogglePauseResume,
-                        onOpenAppSwitch = { pkg, label ->
-                            appSwitchPreselect = if (!pkg.isNullOrBlank()) pkg to label.orEmpty() else null
-                            showAppSwitchSheet = true
-                        },
-                        onOpenBreak = { showBreakSheet = true },
-                        onOpenExit = { showExitDialog = true },
-                        onOpenChangePurpose = { showChangePurposeSheet = true },
-                        onReturnFromBreak = onReturnFromBreak,
-                        onReturnFromTempAccess = onReturnToFocusFromTempAccess,
-                        onLaunchAllowedApp = { pkg -> AppLauncherHelper.launchApp(context, pkg) },
-                        onOpenUsageSettings = { AppUsageAwarenessHelper.openUsageAccessSettings(context) },
-                        onDistractionReturn = { pkg, label ->
-                            onDistractionAction(pkg, label, "RETURN_TO_FOCUS")
-                        },
-                        onClearNotice = onClearTempAccessNotice,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .widthIn(max = adaptive.maxContentWidth)
-                    )
                 }
             }
+        } else {
+            ActiveFocusSessionContent(
+                uiState = uiState,
+                soundscapeState = soundscapeState,
+                onOpenSoundscape = { showSoundscapeSheet = true },
+                onToggleSoundscapePlayPause = { soundscapeController.togglePlayPause() },
+                onTogglePauseResume = onTogglePauseResume,
+                onOpenAppSwitch = { pkg, label ->
+                    appSwitchPreselect = if (!pkg.isNullOrBlank()) pkg to label.orEmpty() else null
+                    showAppSwitchSheet = true
+                },
+                onOpenBreak = { showBreakSheet = true },
+                onOpenExit = { showExitDialog = true },
+                onOpenChangePurpose = { showChangePurposeSheet = true },
+                onReturnFromBreak = onReturnFromBreak,
+                onReturnFromTempAccess = onReturnToFocusFromTempAccess,
+                onLaunchAllowedApp = { pkg -> AppLauncherHelper.launchApp(context, pkg) },
+                onOpenUsageSettings = { AppUsageAwarenessHelper.openUsageAccessSettings(context) },
+                onDistractionReturn = { pkg, label ->
+                    onDistractionAction(pkg, label, "RETURN_TO_FOCUS")
+                },
+                onClearNotice = onClearTempAccessNotice,
+                onMinimizeFocus = onMinimizeFocus,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .widthIn(max = adaptive.maxContentWidth)
+            )
         }
     }
 
@@ -247,6 +277,8 @@ fun FocusScreen(
             onTogglePlayPause = { soundscapeController.togglePlayPause() },
             onVolumeChange = { soundscapeController.setVolume(it) },
             onSyncWithTimerChange = { soundscapeController.setSyncWithTimer(it) },
+            onTogglePreview = { soundscapeController.togglePreview(it) },
+            onStopPreview = { soundscapeController.stopPreview() },
             onDismiss = { showSoundscapeSheet = false }
         )
     }
@@ -283,19 +315,20 @@ fun FocusScreen(
         val exitPreviewSnap = remember(
             uiState.timer.snapshot,
             uiState.activeTempAccess,
-            uiState.nowEpochMs
+            uiState.nowEpochMs,
+            uiState.nowElapsedMs
         ) {
             FocusTimerEngine.resolveParentForEarlyExit(
                 snapshot = uiState.timer.snapshot,
                 activeTempAccess = uiState.activeTempAccess,
                 nowEpochMs = uiState.nowEpochMs,
-                nowElapsedRealtimeMs = android.os.SystemClock.elapsedRealtime()
+                nowElapsedRealtimeMs = uiState.nowElapsedMs
             )
         }
         val previewElapsedSec = FocusTimerEngine.actualFocusedSeconds(
             snapshot = exitPreviewSnap,
             nowEpochMs = uiState.nowEpochMs,
-            nowElapsedRealtimeMs = android.os.SystemClock.elapsedRealtime()
+            nowElapsedRealtimeMs = uiState.nowElapsedMs
         )
         ExitSessionConfirmationDialog(
             sessionName = exitPreviewSnap.sessionGoal.ifBlank { exitPreviewSnap.purposeCategory.label },
@@ -536,7 +569,11 @@ private fun FocusSetupContent(
                                     .size(48.dp)
                                     .testTag("focus_duration_minus")
                             ) {
-                                Icon(Icons.Rounded.Remove, contentDescription = "Decrease duration by 5 minutes")
+                                Icon(
+                                    imageVector = Icons.Rounded.Remove,
+                                    contentDescription = "Decrease duration by 5 minutes",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
                             }
                             Text(
                                 text = "${durationMinutes}m",
@@ -552,7 +589,11 @@ private fun FocusSetupContent(
                                     .size(48.dp)
                                     .testTag("focus_duration_plus")
                             ) {
-                                Icon(Icons.Rounded.Add, contentDescription = "Increase duration by 5 minutes")
+                                Icon(
+                                    imageVector = Icons.Rounded.Add,
+                                    contentDescription = "Increase duration by 5 minutes",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
                             }
                         }
                     }
@@ -840,6 +881,7 @@ private fun ActiveFocusSessionContent(
     uiState: BrainBufferUiState,
     soundscapeState: SoundscapeState,
     onOpenSoundscape: () -> Unit,
+    onToggleSoundscapePlayPause: () -> Unit,
     onTogglePauseResume: () -> Unit,
     onOpenAppSwitch: (String?, String?) -> Unit,
     onOpenBreak: () -> Unit,
@@ -851,8 +893,12 @@ private fun ActiveFocusSessionContent(
     onOpenUsageSettings: () -> Unit,
     onDistractionReturn: (String, String) -> Unit,
     onClearNotice: () -> Unit,
+    onMinimizeFocus: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Hardware/gesture back gently minimizes to Home without terminating the focus session.
+    BackHandler { onMinimizeFocus() }
+
     val timer = uiState.timer
     val snapshot = timer.snapshot
     val isBreak = snapshot.isOnBreak
@@ -864,122 +910,231 @@ private fun ActiveFocusSessionContent(
     val purposeAccent = remember(snapshot.purposeCategory, isBreak) {
         if (isBreak) Color(0xFF10B981) else Color(snapshot.purposeCategory.accentHex)
     }
-    val animatedProgress by animateFloatAsState(
-        targetValue = timer.progress.coerceIn(0f, 1f),
-        animationSpec = tween(420, easing = FastOutSlowInEasing),
-        label = "active_timer_ring"
-    )
 
-    LazyColumn(
-        modifier = modifier,
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 120.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // Top Header with Purpose Badge + EXACT 3-Action Overflow Menu
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = purposeAccent.copy(alpha = 0.16f)
-                        ) {
-                            Text(
-                                text = if (isBreak) "BREAK" else snapshot.purposeCategory.label.uppercase(),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = purposeAccent,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
-                        if (activeTemp != null) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.16f)
-                            ) {
-                                Text(
-                                    text = "TEMP ACCESS",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.tertiary,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (isBreak) {
-                            "Break time · Focus paused"
-                        } else {
-                            snapshot.sessionGoal.ifBlank { snapshot.purposeCategory.label }
-                        },
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onBackground,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.testTag("active_focus_session_title")
-                    )
-                }
-
-                // Three-dot menu with EXACTLY 3 main actions: App Switch, Break, Exit
-                Box {
-                    IconButton(
-                        onClick = { overflowExpanded = true },
-                        modifier = Modifier.testTag("active_focus_overflow_menu")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.MoreVert,
-                            contentDescription = "Session options"
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = overflowExpanded,
-                        onDismissRequest = { overflowExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("App Switch") },
-                            leadingIcon = { Icon(Icons.Rounded.SwapHoriz, contentDescription = null) },
-                            onClick = {
-                                overflowExpanded = false
-                                onOpenAppSwitch(null, null)
-                            },
-                            modifier = Modifier.testTag("overflow_action_app_switch")
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Break") },
-                            leadingIcon = { Icon(Icons.Rounded.Coffee, contentDescription = null) },
-                            onClick = {
-                                overflowExpanded = false
-                                onOpenBreak()
-                            },
-                            modifier = Modifier.testTag("overflow_action_break")
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Exit") },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Rounded.ExitToApp,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                            },
-                            onClick = {
-                                overflowExpanded = false
-                                onOpenExit()
-                            },
-                            modifier = Modifier.testTag("overflow_action_exit")
-                        )
-                    }
+    // Dedicated full-screen AMOLED sanctuary theme: forces true #000000 dark canvas and
+    // high-contrast light system bar icons while active, restoring outer theme on leave.
+    val outerWasDark = BrainBufferThemeTokens.surfaceColors.isAmoledDark
+    val renderQuality = BrainBufferThemeTokens.renderQuality
+    val reducedMotion = BrainBufferThemeTokens.reducedMotion
+    val blurState = BrainBufferThemeTokens.blurState
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        DisposableEffect(view, outerWasDark) {
+            val window = (view.context as? Activity)?.window
+            val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+            controller?.apply {
+                isAppearanceLightStatusBars = false
+                isAppearanceLightNavigationBars = false
+            }
+            onDispose {
+                controller?.apply {
+                    isAppearanceLightStatusBars = !outerWasDark
+                    isAppearanceLightNavigationBars = !outerWasDark
                 }
             }
         }
+    }
+
+    val darkLiquidGlassTokens = remember(renderQuality, reducedMotion, blurState.navBlurRadiusDp) {
+        LiquidGlassTokens.resolve(
+            isDark = true,
+            renderQuality = renderQuality,
+            reducedMotion = reducedMotion,
+            blurState = blurState
+        )
+    }
+
+    // Subtle living aura intensity behind the timer ring (static when paused or reduced motion)
+    val auraAlpha = if (!reducedMotion && timer.isRunning) {
+        val transition = rememberInfiniteTransition(label = "focus_sanctuary_aura")
+        val animated by transition.animateFloat(
+            initialValue = 0.14f,
+            targetValue = 0.24f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 4800, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "focus_aura_alpha"
+        )
+        animated
+    } else {
+        0.13f
+    }
+
+    CompositionLocalProvider(
+        LocalBrainBufferColors provides DarkExtendedColors,
+        LocalLiquidGlassSurfaceColors provides AmoledLiquidGlassSurfaceColors,
+        LocalLiquidGlassTokens provides darkLiquidGlassTokens,
+        LocalContentColor provides AmoledLiquidGlassColorScheme.onBackground
+    ) {
+        MaterialTheme(
+            colorScheme = AmoledLiquidGlassColorScheme,
+            typography = MaterialTheme.typography,
+            shapes = MaterialTheme.shapes
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .drawBehind {
+                        val auraCenter = Offset(size.width * 0.5f, size.height * 0.34f)
+                        val auraRadius = size.minDimension * 0.82f
+                        drawCircle(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    purposeAccent.copy(alpha = auraAlpha),
+                                    purposeAccent.copy(alpha = auraAlpha * 0.28f),
+                                    Color.Transparent
+                                ),
+                                center = auraCenter,
+                                radius = auraRadius
+                            ),
+                            center = auraCenter,
+                            radius = auraRadius
+                        )
+                    }
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .testTag("dedicated_focus_mode_screen"),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                LazyColumn(
+                    modifier = modifier,
+                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 36.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Minimal Sanctuary Top Bar: Minimize + Status Pills + 3-Action Overflow
+                    item {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = onMinimizeFocus,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("active_focus_minimize_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.KeyboardArrowDown,
+                                        contentDescription = "Minimize focus mode",
+                                        tint = MaterialTheme.colorScheme.onBackground
+                                    )
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = purposeAccent.copy(alpha = 0.18f),
+                                        border = BorderStroke(1.dp, purposeAccent.copy(alpha = 0.38f))
+                                    ) {
+                                        Text(
+                                            text = if (isBreak) "BREAK MODE" else snapshot.purposeCategory.label.uppercase(),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = purposeAccent,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                                        )
+                                    }
+                                    if (activeTemp != null) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.18f)
+                                        ) {
+                                            Text(
+                                                text = "TEMP ACCESS",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.tertiary,
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Three-dot menu with EXACTLY 3 main actions: App Switch, Break, Exit
+                                Box {
+                                    IconButton(
+                                        onClick = { overflowExpanded = true },
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("active_focus_overflow_menu")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.MoreVert,
+                                            contentDescription = "Session options",
+                                            tint = MaterialTheme.colorScheme.onBackground
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = overflowExpanded,
+                                        onDismissRequest = { overflowExpanded = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("App Switch") },
+                                            leadingIcon = { Icon(Icons.Rounded.SwapHoriz, contentDescription = null) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                onOpenAppSwitch(null, null)
+                                            },
+                                            modifier = Modifier.testTag("overflow_action_app_switch")
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Break") },
+                                            leadingIcon = { Icon(Icons.Rounded.Coffee, contentDescription = null) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                onOpenBreak()
+                                            },
+                                            modifier = Modifier.testTag("overflow_action_break")
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("End Session") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Rounded.ExitToApp,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.error
+                                                )
+                                            },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                onOpenExit()
+                                            },
+                                            modifier = Modifier.testTag("overflow_action_exit")
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Prominent Centered Task / Session Name
+                            Text(
+                                text = if (isBreak) {
+                                    "Break time · Focus paused"
+                                } else {
+                                    snapshot.sessionGoal.ifBlank { snapshot.purposeCategory.label }
+                                },
+                                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onBackground,
+                                textAlign = TextAlign.Center,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp)
+                                    .testTag("active_focus_session_title")
+                            )
+                        }
+                    }
 
         // Notice Banner (e.g., extension limit reached or purpose updated)
         if (!uiState.tempAccessNotice.isNullOrBlank()) {
@@ -1140,83 +1295,32 @@ private fun ActiveFocusSessionContent(
             val adaptive = LocalAdaptiveMetrics.current
             val useSplitLayout = adaptive.useCompactLandscapeSplit || adaptive.useTwoColumnLayout
             val ringSize = if (adaptive.isCompactHeight) 210.dp else 258.dp
-            val trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f)
-
-            val ringContent: @Composable () -> Unit = {
-                Box(
-                    modifier = Modifier
-                        .size(ringSize)
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val strokeWidth = 14.dp.toPx()
-                        val inset = strokeWidth / 2f
-                        val arcSize = Size(size.width - strokeWidth, size.height - strokeWidth)
-                        val topLeft = Offset(inset, inset)
-                        drawArc(
-                            color = trackColor,
-                            startAngle = -90f,
-                            sweepAngle = 360f,
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                        )
-                        drawArc(
-                            brush = Brush.sweepGradient(
-                                colors = listOf(
-                                    purposeAccent,
-                                    purposeAccent.copy(alpha = 0.65f),
-                                    purposeAccent
-                                )
-                            ),
-                            startAngle = -90f,
-                            sweepAngle = (animatedProgress * 360f).coerceIn(0f, 360f),
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                        )
-                    }
-
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = when {
-                                isBreak -> "BREAK REMAINING"
-                                activeTemp != null -> "FOCUS PAUSED"
-                                timer.isRunning -> "REMAINING"
-                                else -> "PAUSED"
-                            },
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                            color = purposeAccent
-                        )
-                        Text(
-                            text = timer.formattedTime,
-                            style = MaterialTheme.typography.displayMedium.copy(
-                                fontFamily = JetBrainsMonoFamily,
-                                fontWeight = FontWeight.Bold
-                            ),
-                            color = MaterialTheme.colorScheme.onBackground,
-                            modifier = Modifier.testTag("active_focus_countdown")
-                        )
-                        Text(
-                            text = "Elapsed ${timer.formattedElapsedTime} · ${(timer.totalSeconds / 60).coerceAtLeast(1)}m planned",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+            val statusText = when {
+                isBreak -> "BREAK REMAINING"
+                activeTemp != null -> "FOCUS PAUSED"
+                timer.isRunning -> "REMAINING"
+                else -> "PAUSED"
             }
 
-            val statusAndControls: @Composable () -> Unit = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
+            FocusTimerDisplay(
+                remainingSeconds = timer.remainingSeconds,
+                elapsedSeconds = timer.elapsedFocusedSeconds,
+                totalSeconds = timer.totalSeconds,
+                progress = timer.progress,
+                isRunning = timer.isRunning,
+                hasStarted = timer.hasStarted,
+                sessionState = timer.sessionState,
+                onToggleStartPause = onTogglePauseResume,
+                accentColor = purposeAccent,
+                ringSize = ringSize,
+                statusLabel = statusText,
+                primaryControlEnabled = activeTemp == null,
+                onReset = null,
+                useSplitLayout = useSplitLayout,
+                countdownTestTag = "active_focus_countdown",
+                primaryControlTestTag = "active_focus_pause_resume_button",
+                resetControlTestTag = "active_focus_reset_button",
+                supportingContent = {
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
@@ -1249,8 +1353,9 @@ private fun ActiveFocusSessionContent(
                             )
                         }
                     }
-
-                    if (isBreak) {
+                },
+                primaryControlOverride = if (isBreak) {
+                    {
                         LiquidGlassButton(
                             onClick = onReturnFromBreak,
                             modifier = Modifier
@@ -1260,65 +1365,51 @@ private fun ActiveFocusSessionContent(
                         ) {
                             Icon(Icons.Rounded.PlayArrow, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Return to Focus Early", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+                            Text(
+                                "Return to Focus Early",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
                         }
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    }
+                } else {
+                    null
+                },
+                trailingControls = {
+                    if (!isBreak) {
+                        LiquidGlassSecondaryButton(
+                            onClick = onOpenExit,
+                            cornerRadius = 18.dp,
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                            modifier = Modifier
+                                .height(54.dp)
+                                .minimumInteractiveComponentSize()
+                                .testTag("active_focus_end_button")
                         ) {
-                            LiquidGlassButton(
-                                onClick = onTogglePauseResume,
-                                enabled = activeTemp == null,
-                                modifier = Modifier
-                                    .weight(1.3f)
-                                    .height(54.dp)
-                                    .testTag("active_focus_pause_resume_button")
-                            ) {
-                                Icon(
-                                    imageVector = if (timer.isRunning) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = if (timer.isRunning) "Pause" else "Resume",
-                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                                )
-                            }
-                            FocusSoundscapePill(
-                                state = soundscapeState,
-                                onClick = onOpenSoundscape
+                            Icon(
+                                imageVector = Icons.Rounded.Stop,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "End",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
                 }
-            }
+            )
+        }
 
-            if (useSplitLayout) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        ringContent()
-                    }
-                    Box(modifier = Modifier.weight(1f)) {
-                        statusAndControls()
-                    }
-                }
-            } else {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    ringContent()
-                    statusAndControls()
-                }
-            }
+        // Dedicated Quick Soundscape Bar (always visible in Focus Mode without clutter)
+        item {
+            FocusModeSoundControlBar(
+                state = soundscapeState,
+                onOpenSoundscapeSheet = onOpenSoundscape,
+                onTogglePlayPause = onToggleSoundscapePlayPause
+            )
         }
 
         // Allowed Apps Quick-Launch Row
@@ -1385,6 +1476,9 @@ private fun ActiveFocusSessionContent(
                             }
                         }
                     }
+                }
+            }
+        }
                 }
             }
         }

@@ -1,34 +1,438 @@
 package com.example.domain
 
+import android.os.SystemClock
 import com.example.model.ActivityCategory
 import com.example.model.BreakPlanConfig
 import com.example.model.BreakPlanMode
 import com.example.model.FocusGuardLevel
 import com.example.model.FocusMode
+import com.example.model.FocusSessionState
 import com.example.model.PausedParentSession
 import com.example.model.PersistedTimerSnapshot
 import com.example.model.SelectedSessionApp
 import com.example.model.SessionPurposeCategory
 import com.example.model.StrictnessLevel
 import com.example.model.StudyActivityType
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 /**
- * Pure, monotonic + wall-clock hybrid focus timer calculator.
- *
- * Guarantees:
- * - Uses monotonic `elapsedRealtimeMs` when available so wall-clock adjustments, timezone shifts,
- *   or NTP updates never distort an active study session.
- * - Falls back safely to wall-clock `epochMs` if the device rebooted and `elapsedRealtimeMs` reset
- *   below [PersistedTimerSnapshot.runningSinceElapsedRealtimeMs].
- * - Paused intervals are NEVER counted as focused time because active start anchors are cleared on pause
- *   after folding only the active segment into [PersistedTimerSnapshot.accumulatedFocusedMs].
- * - Preserves the original study session inside [PersistedTimerSnapshot.pausedParentSession] when
- *   switching temporarily to a lecture, break, reading, gaming, or custom activity.
+ * Controllable clock abstraction separating monotonic duration measurement (`elapsedRealtimeMs`)
+ * and wall-clock timestamps (`currentTimeMillis`) from Android framework globals so the timer
+ * engine is 100% deterministic and unit-testable.
  */
-object FocusTimerEngine {
+interface TimerClock {
+    fun elapsedRealtimeMs(): Long
+    fun currentTimeMillis(): Long
+}
 
-    fun generateSessionId(): String = UUID.randomUUID().toString()
+object SystemTimerClock : TimerClock {
+    override fun elapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()
+    override fun currentTimeMillis(): Long = System.currentTimeMillis()
+}
+
+/**
+ * Single authoritative point-in-time timer readout produced by [FocusTimerEngine.computeTick]
+ * and emitted by [FocusTimerEngine.tickState].
+ */
+data class FocusTimerTick(
+    val snapshot: PersistedTimerSnapshot = PersistedTimerSnapshot(),
+    val nowEpochMs: Long = 0L,
+    val nowElapsedRealtimeMs: Long = 0L,
+    val elapsedFocusedMs: Long = 0L,
+    val elapsedSeconds: Int = 0,
+    val remainingSeconds: Int = snapshot.totalSeconds.coerceAtLeast(0),
+    val progress: Float = 0f,
+    val isRunning: Boolean = false,
+    val isCompleted: Boolean = false,
+    val sessionState: FocusSessionState = FocusSessionState.IDLE
+)
+
+/**
+ * Authoritative, monotonic + wall-clock hybrid focus timer engine.
+ *
+ * Instance runtime guarantees:
+ * - Tracks active focus duration exclusively via [TimerClock.elapsedRealtimeMs]
+ *   (defaulting to [SystemClock.elapsedRealtime]) so wall-clock jumps, timezone shifts,
+ *   or NTP updates never distort an active session, with automatic wall-clock fallback across reboots.
+ * - Survives configuration changes when scoped to a ViewModel/service coroutine scope, and survives
+ *   process recreation via [exportPersistableSnapshot] + [restoreFromPersisted] / [reconcileExternalSnapshot].
+ * - Manages all focus session states ([FocusSessionState]) atomically and race-safely under rapid taps.
+ * - Maintains at most ONE active coroutine ticker loop aligned to exact second boundaries, sleeping
+ *   with ZERO wakeups when idle or paused and performing ZERO database writes on per-second ticks.
+ * - Enforces strictly idempotent natural completion so [onNaturalCompletion] fires at most once per sessionId.
+ *
+ * Companion pure helpers remain available for stateless calculations in services, notifications,
+ * widgets, and deterministic unit tests.
+ */
+class FocusTimerEngine(
+    private val scope: CoroutineScope,
+    private val clock: TimerClock = SystemTimerClock,
+    initialSnapshot: PersistedTimerSnapshot = PersistedTimerSnapshot(),
+    private val minTickDelayMs: Long = 16L,
+    private val onNaturalCompletion: (
+        (PersistedTimerSnapshot, SessionCompletionDecision.NaturalCompletion) -> Unit
+    )? = null
+) {
+    private val stateLock = Any()
+    private var currentSnapshot: PersistedTimerSnapshot = initialSnapshot
+    private val completedSessionIds = mutableSetOf<String>()
+    private var tickJob: Job? = null
+
+    private val _tickState = MutableStateFlow(
+        computeTick(
+            snapshot = initialSnapshot,
+            nowEpochMs = clock.currentTimeMillis(),
+            nowElapsedRealtimeMs = clock.elapsedRealtimeMs()
+        )
+    )
+    val tickState: StateFlow<FocusTimerTick> = _tickState.asStateFlow()
+
+    val snapshot: PersistedTimerSnapshot
+        get() = synchronized(stateLock) { currentSnapshot }
+
+    val sessionState: FocusSessionState
+        get() = _tickState.value.sessionState
+
+    val isRunning: Boolean
+        get() = _tickState.value.isRunning
+
+    init {
+        if (initialSnapshot.lastCompletedSessionId.isNotBlank()) {
+            completedSessionIds.add(initialSnapshot.lastCompletedSessionId)
+        }
+        syncWithClock()
+    }
+
+    /**
+     * Returns an immutable snapshot suitable for persisting to DataStore or SavedStateHandle
+     * so the active or paused session survives process death and recreation.
+     */
+    fun exportPersistableSnapshot(): PersistedTimerSnapshot = snapshot
+
+    /**
+     * Atomically computes a new [PersistedTimerSnapshot] from the authoritative current snapshot
+     * and current clock readings, updates [tickState] immediately, and manages the single ticker loop.
+     */
+    fun applyTransition(
+        transform: (current: PersistedTimerSnapshot, nowEpochMs: Long, nowElapsedRealtimeMs: Long) -> PersistedTimerSnapshot
+    ): PersistedTimerSnapshot {
+        var completionToFire: Pair<PersistedTimerSnapshot, SessionCompletionDecision.NaturalCompletion>? = null
+        val updated = synchronized(stateLock) {
+            val nowEpoch = clock.currentTimeMillis()
+            val nowElapsed = clock.elapsedRealtimeMs()
+            val next = transform(currentSnapshot, nowEpoch, nowElapsed)
+            if (next.lastCompletedSessionId.isNotBlank()) {
+                completedSessionIds.add(next.lastCompletedSessionId)
+            }
+            val changed = next != currentSnapshot
+            currentSnapshot = next
+            val tick = computeTick(next, nowEpoch, nowElapsed)
+            _tickState.value = tick
+            completionToFire = checkAndClaimNaturalCompletionLocked(next, nowEpoch, nowElapsed)
+            if (completionToFire != null) {
+                stopTickerLocked()
+            } else if (tick.isRunning) {
+                if (changed || tickJob?.isActive != true) {
+                    restartTickerLocked()
+                }
+            } else {
+                stopTickerLocked()
+            }
+            next
+        }
+        completionToFire?.let { (snap, decision) ->
+            onNaturalCompletion?.invoke(snap, decision)
+        }
+        return updated
+    }
+
+    fun start(
+        durationMinutes: Int,
+        mode: FocusMode = FocusMode.FOCUS
+    ): PersistedTimerSnapshot = applyTransition { current, nowEpoch, nowElapsed ->
+        val configured = configureMode(current, mode, durationMinutes)
+        startOrResume(configured, nowEpoch, nowElapsed)
+    }
+
+    fun startOrResume(): PersistedTimerSnapshot = applyTransition { current, nowEpoch, nowElapsed ->
+        startOrResume(current, nowEpoch, nowElapsed)
+    }
+
+    fun pause(): PersistedTimerSnapshot = applyTransition { current, nowEpoch, nowElapsed ->
+        pause(current, nowEpoch, nowElapsed)
+    }
+
+    fun togglePauseResume(): PersistedTimerSnapshot = applyTransition { current, nowEpoch, nowElapsed ->
+        if (current.runningSinceEpochMs != null) {
+            pause(current, nowEpoch, nowElapsed)
+        } else {
+            startOrResume(current, nowEpoch, nowElapsed)
+        }
+    }
+
+    fun reset(): PersistedTimerSnapshot = applyTransition { current, _, _ ->
+        reset(current)
+    }
+
+    fun extend(extraMinutes: Int): PersistedTimerSnapshot = applyTransition { current, nowEpoch, nowElapsed ->
+        extendActiveTimer(current, extraMinutes, nowEpoch, nowElapsed)
+    }
+
+    /**
+     * Restores persisted timer state after process recreation:
+     * - Reconciles the snapshot atomically into this engine.
+     * - Restarts the monotonic ticker if still running.
+     * - Fires idempotent natural completion if the timer expired while the process was dead.
+     * - Cleans already-completed snapshots so they can never restart accidentally.
+     */
+    fun restoreFromPersisted(persisted: PersistedTimerSnapshot): ProcessRestorationResult {
+        var completionToFire: Pair<PersistedTimerSnapshot, SessionCompletionDecision.NaturalCompletion>? = null
+        val result = synchronized(stateLock) {
+            if (persisted.lastCompletedSessionId.isNotBlank()) {
+                completedSessionIds.add(persisted.lastCompletedSessionId)
+            }
+            val nowEpoch = clock.currentTimeMillis()
+            val nowElapsed = clock.elapsedRealtimeMs()
+            val restored = restoreAfterProcessRecreation(
+                snapshot = persisted,
+                nowEpochMs = nowEpoch,
+                nowElapsedRealtimeMs = nowElapsed,
+                completedSessionIds = completedSessionIds
+            )
+            when (restored) {
+                is ProcessRestorationResult.AlreadyCompleted -> {
+                    currentSnapshot = restored.snapshot
+                    _tickState.value = computeTick(restored.snapshot, nowEpoch, nowElapsed)
+                    stopTickerLocked()
+                }
+                is ProcessRestorationResult.Idle -> {
+                    currentSnapshot = restored.snapshot
+                    _tickState.value = computeTick(restored.snapshot, nowEpoch, nowElapsed)
+                    stopTickerLocked()
+                }
+                is ProcessRestorationResult.Paused -> {
+                    currentSnapshot = restored.snapshot
+                    _tickState.value = computeTick(restored.snapshot, nowEpoch, nowElapsed)
+                    stopTickerLocked()
+                }
+                is ProcessRestorationResult.Running -> {
+                    val changed = restored.snapshot != currentSnapshot
+                    currentSnapshot = restored.snapshot
+                    _tickState.value = computeTick(restored.snapshot, nowEpoch, nowElapsed)
+                    if (changed || tickJob?.isActive != true) {
+                        restartTickerLocked()
+                    }
+                }
+                is ProcessRestorationResult.NaturalCompletionPending -> {
+                    currentSnapshot = restored.snapshot
+                    _tickState.value = computeTick(restored.snapshot, nowEpoch, nowElapsed)
+                    if (completedSessionIds.add(restored.decision.sessionId)) {
+                        completionToFire = restored.snapshot to restored.decision
+                    }
+                    stopTickerLocked()
+                }
+            }
+            restored
+        }
+        completionToFire?.let { (snap, decision) ->
+            onNaturalCompletion?.invoke(snap, decision)
+        }
+        return result
+    }
+
+    /**
+     * Adopts an externally persisted snapshot (e.g., on process recreation or when the user taps
+     * Pause/Resume/Extend in the Android notification shade or [FocusTimerService] completes).
+     */
+    fun reconcileExternalSnapshot(external: PersistedTimerSnapshot) {
+        var completionToFire: Pair<PersistedTimerSnapshot, SessionCompletionDecision.NaturalCompletion>? = null
+        synchronized(stateLock) {
+            if (external.lastCompletedSessionId.isNotBlank()) {
+                completedSessionIds.add(external.lastCompletedSessionId)
+            }
+            val changed = external != currentSnapshot
+            if (changed) {
+                currentSnapshot = external
+            }
+            val nowEpoch = clock.currentTimeMillis()
+            val nowElapsed = clock.elapsedRealtimeMs()
+            val tick = computeTick(currentSnapshot, nowEpoch, nowElapsed)
+            _tickState.value = tick
+            completionToFire = checkAndClaimNaturalCompletionLocked(currentSnapshot, nowEpoch, nowElapsed)
+            if (completionToFire != null) {
+                stopTickerLocked()
+            } else if (tick.isRunning) {
+                if (changed || tickJob?.isActive != true) {
+                    restartTickerLocked()
+                }
+            } else {
+                stopTickerLocked()
+            }
+        }
+        completionToFire?.let { (snap, decision) ->
+            onNaturalCompletion?.invoke(snap, decision)
+        }
+    }
+
+    /**
+     * Immediately recomputes elapsed/remaining time from [TimerClock.elapsedRealtimeMs], ensures
+     * the ticker loop is running if active, and triggers idempotent completion if the session
+     * expired while the screen was locked or the app was in the background.
+     */
+    fun syncWithClock(): FocusTimerTick {
+        var completionToFire: Pair<PersistedTimerSnapshot, SessionCompletionDecision.NaturalCompletion>? = null
+        val tick = synchronized(stateLock) {
+            val nowEpoch = clock.currentTimeMillis()
+            val nowElapsed = clock.elapsedRealtimeMs()
+            val computed = computeTick(currentSnapshot, nowEpoch, nowElapsed)
+            _tickState.value = computed
+            completionToFire = checkAndClaimNaturalCompletionLocked(currentSnapshot, nowEpoch, nowElapsed)
+            if (completionToFire != null) {
+                stopTickerLocked()
+            } else if (computed.isRunning) {
+                if (tickJob?.isActive != true) {
+                    restartTickerLocked()
+                }
+            } else {
+                stopTickerLocked()
+            }
+            computed
+        }
+        completionToFire?.let { (snap, decision) ->
+            onNaturalCompletion?.invoke(snap, decision)
+        }
+        return tick
+    }
+
+    fun markSessionCompleted(sessionId: String) {
+        if (sessionId.isBlank()) return
+        synchronized(stateLock) {
+            completedSessionIds.add(sessionId)
+        }
+    }
+
+    fun hasCompletedSession(sessionId: String): Boolean {
+        if (sessionId.isBlank()) return false
+        return synchronized(stateLock) { sessionId in completedSessionIds }
+    }
+
+    fun snapshotCompletedSessionIds(): Set<String> = synchronized(stateLock) {
+        completedSessionIds.toSet()
+    }
+
+    fun close() {
+        synchronized(stateLock) {
+            stopTickerLocked()
+        }
+    }
+
+    private fun checkAndClaimNaturalCompletionLocked(
+        snapshot: PersistedTimerSnapshot,
+        nowEpochMs: Long,
+        nowElapsedRealtimeMs: Long
+    ): Pair<PersistedTimerSnapshot, SessionCompletionDecision.NaturalCompletion>? {
+        if (!snapshot.hasStarted) return null
+        val decision = evaluateNaturalCompletion(
+            snapshot = snapshot,
+            nowEpochMs = nowEpochMs,
+            nowElapsedRealtimeMs = nowElapsedRealtimeMs,
+            completedSessionIds = completedSessionIds
+        )
+        return if (decision is SessionCompletionDecision.NaturalCompletion) {
+            if (completedSessionIds.add(decision.sessionId)) {
+                snapshot to decision
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+    }
+
+    private fun stopTickerLocked() {
+        tickJob?.cancel()
+        tickJob = null
+    }
+
+    private fun restartTickerLocked() {
+        tickJob?.cancel()
+        tickJob = scope.launch {
+            while (isActive) {
+                var completionToFire: Pair<PersistedTimerSnapshot, SessionCompletionDecision.NaturalCompletion>? = null
+                val waitMs: Long = synchronized(stateLock) {
+                    val snap = currentSnapshot
+                    val nowEpoch = clock.currentTimeMillis()
+                    val nowElapsed = clock.elapsedRealtimeMs()
+                    val tick = computeTick(snap, nowEpoch, nowElapsed)
+                    _tickState.value = tick
+                    if (!snap.hasStarted || snap.runningSinceEpochMs == null) {
+                        -1L
+                    } else if (tick.isCompleted) {
+                        completionToFire = checkAndClaimNaturalCompletionLocked(snap, nowEpoch, nowElapsed)
+                        -1L
+                    } else {
+                        millisUntilNextSecondTick(
+                            snapshot = snap,
+                            nowEpochMs = nowEpoch,
+                            nowElapsedRealtimeMs = nowElapsed,
+                            minDelayMs = minTickDelayMs
+                        )
+                    }
+                }
+                completionToFire?.let { (snap, decision) ->
+                    onNaturalCompletion?.invoke(snap, decision)
+                }
+                if (waitMs <= 0L) break
+                delay(waitMs)
+            }
+        }
+    }
+
+    sealed class SessionCompletionDecision {
+        data object RejectedNotStarted : SessionCompletionDecision()
+        data class RejectedBeforeExpiry(
+            val remainingSeconds: Int,
+            val actualElapsedSeconds: Int
+        ) : SessionCompletionDecision()
+        data class RejectedDuplicate(val sessionId: String) : SessionCompletionDecision()
+        data class NaturalCompletion(
+            val sessionId: String,
+            val actualSeconds: Int,
+            val plannedSeconds: Int,
+            val linkedTaskId: Long?
+        ) : SessionCompletionDecision()
+    }
+
+    data class EarlyEndDecision(
+        val sessionId: String,
+        val actualSeconds: Int,
+        val plannedSeconds: Int,
+        val shouldPersist: Boolean,
+        val status: String
+    )
+
+    sealed class ProcessRestorationResult {
+        data class Idle(val snapshot: PersistedTimerSnapshot) : ProcessRestorationResult()
+        data class Running(val snapshot: PersistedTimerSnapshot, val remainingSeconds: Int) : ProcessRestorationResult()
+        data class Paused(val snapshot: PersistedTimerSnapshot, val remainingSeconds: Int) : ProcessRestorationResult()
+        data class NaturalCompletionPending(
+            val snapshot: PersistedTimerSnapshot,
+            val decision: SessionCompletionDecision.NaturalCompletion
+        ) : ProcessRestorationResult()
+        data class AlreadyCompleted(val snapshot: PersistedTimerSnapshot) : ProcessRestorationResult()
+    }
+
+    companion object {
+
+        fun generateSessionId(): String = UUID.randomUUID().toString()
 
     fun elapsedFocusedMs(
         snapshot: PersistedTimerSnapshot,
@@ -76,38 +480,61 @@ object FocusTimerEngine {
         return (elapsed / snapshot.totalSeconds.toFloat()).coerceIn(0f, 1f)
     }
 
-    sealed class SessionCompletionDecision {
-        data object RejectedNotStarted : SessionCompletionDecision()
-        data class RejectedBeforeExpiry(
-            val remainingSeconds: Int,
-            val actualElapsedSeconds: Int
-        ) : SessionCompletionDecision()
-        data class RejectedDuplicate(val sessionId: String) : SessionCompletionDecision()
-        data class NaturalCompletion(
-            val sessionId: String,
-            val actualSeconds: Int,
-            val plannedSeconds: Int,
-            val linkedTaskId: Long?
-        ) : SessionCompletionDecision()
+    /**
+     * Computes a single consistent, invariant-preserving [FocusTimerTick] snapshot where
+     * `elapsedSeconds + remainingSeconds == snapshot.totalSeconds` and values are never negative.
+     */
+    fun computeTick(
+        snapshot: PersistedTimerSnapshot,
+        nowEpochMs: Long,
+        nowElapsedRealtimeMs: Long
+    ): FocusTimerTick {
+        val totalSec = snapshot.totalSeconds.coerceAtLeast(0)
+        val totalMs = totalSec.toLong() * 1000L
+        val elapsedMs = elapsedFocusedMs(snapshot, nowEpochMs, nowElapsedRealtimeMs)
+            .coerceIn(0L, totalMs)
+        val elapsedSec = (elapsedMs / 1000L).toInt().coerceIn(0, totalSec)
+        val remainingSec = (totalSec - elapsedSec).coerceAtLeast(0)
+        val prog = if (totalMs > 0L) (elapsedMs.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f) else 0f
+        val completed = snapshot.hasStarted && remainingSec <= 0
+        val running = snapshot.hasStarted && snapshot.runningSinceEpochMs != null && !completed
+        val state = FocusSessionStateMachine.deriveState(
+            snapshot = snapshot,
+            nowEpochMs = nowEpochMs,
+            nowElapsedRealtimeMs = nowElapsedRealtimeMs
+        )
+        return FocusTimerTick(
+            snapshot = snapshot,
+            nowEpochMs = nowEpochMs,
+            nowElapsedRealtimeMs = nowElapsedRealtimeMs,
+            elapsedFocusedMs = elapsedMs,
+            elapsedSeconds = elapsedSec,
+            remainingSeconds = remainingSec,
+            progress = prog,
+            isRunning = running,
+            isCompleted = completed,
+            sessionState = state
+        )
     }
 
-    data class EarlyEndDecision(
-        val sessionId: String,
-        val actualSeconds: Int,
-        val plannedSeconds: Int,
-        val shouldPersist: Boolean,
-        val status: String
-    )
-
-    sealed class ProcessRestorationResult {
-        data class Idle(val snapshot: PersistedTimerSnapshot) : ProcessRestorationResult()
-        data class Running(val snapshot: PersistedTimerSnapshot, val remainingSeconds: Int) : ProcessRestorationResult()
-        data class Paused(val snapshot: PersistedTimerSnapshot, val remainingSeconds: Int) : ProcessRestorationResult()
-        data class NaturalCompletionPending(
-            val snapshot: PersistedTimerSnapshot,
-            val decision: SessionCompletionDecision.NaturalCompletion
-        ) : ProcessRestorationResult()
-        data class AlreadyCompleted(val snapshot: PersistedTimerSnapshot) : ProcessRestorationResult()
+    /**
+     * Returns the exact delay in milliseconds until the next integer second boundary so countdown
+     * ticks never drift, skip seconds, or linger for double intervals across pauses and OS jitter.
+     */
+    fun millisUntilNextSecondTick(
+        snapshot: PersistedTimerSnapshot,
+        nowEpochMs: Long,
+        nowElapsedRealtimeMs: Long? = null,
+        minDelayMs: Long = 16L
+    ): Long {
+        if (!snapshot.hasStarted || snapshot.runningSinceEpochMs == null) return 1000L
+        val totalMs = snapshot.totalSeconds.toLong().coerceAtLeast(0L) * 1000L
+        val elapsedMs = elapsedFocusedMs(snapshot, nowEpochMs, nowElapsedRealtimeMs).coerceAtLeast(0L)
+        val remainingMs = (totalMs - elapsedMs).coerceAtLeast(0L)
+        if (remainingMs == 0L) return 0L
+        val msIntoCurrentSecond = elapsedMs % 1000L
+        val msToNextBoundary = 1000L - msIntoCurrentSecond
+        return minOf(remainingMs, msToNextBoundary).coerceAtLeast(minDelayMs.coerceAtLeast(1L))
     }
 
     /**
@@ -779,4 +1206,10 @@ object FocusTimerEngine {
             interventionCount = current.interventionCount + 1
         )
     }
+    }
 }
+
+/**
+ * Backwards-compatible alias pointing to the unified [FocusTimerEngine] class.
+ */
+typealias FocusTimerController = FocusTimerEngine

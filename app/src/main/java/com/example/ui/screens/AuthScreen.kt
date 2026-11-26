@@ -102,11 +102,19 @@ fun AuthScreen(
         }
     }
 
+    val emailTrimmed = email.trim()
+    val isEmailValid = emailTrimmed.contains("@") &&
+        emailTrimmed.substringAfter("@").contains(".") &&
+        !emailTrimmed.endsWith(".")
+    val emailInvalid = emailTrimmed.isNotEmpty() && !isEmailValid
+    val passwordTooShort = selectedTab == AuthScreenTab.SIGN_UP &&
+        password.isNotEmpty() &&
+        password.length < 8
     val passwordMismatch = selectedTab == AuthScreenTab.SIGN_UP &&
         confirmPassword.isNotEmpty() &&
         password != confirmPassword
 
-    val showResendVerification = email.contains("@") && (
+    val showResendVerification = isEmailValid && (
         cloudSync.lastError.orEmpty().contains("confirm", ignoreCase = true) ||
             cloudSync.authNotice.orEmpty().contains("verify your email", ignoreCase = true) ||
             cloudSync.authNotice.orEmpty().contains("confirm your account", ignoreCase = true)
@@ -137,14 +145,16 @@ fun AuthScreen(
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                    contentDescription = "Back"
+                    contentDescription = "Back",
+                    tint = MaterialTheme.colorScheme.onSurface
                 )
             }
             Column {
                 Text(
                     text = "Brain Buffer Account",
                     style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
                 )
                 Text(
                     text = "Email Account · Offline-first Supabase sync",
@@ -172,7 +182,8 @@ fun AuthScreen(
                         Text(
                             text = "Supabase Project Keys Needed",
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = "Set SUPABASE_URL and SUPABASE_ANON_KEY in the AI Studio Secrets panel for optional cloud sync. Meanwhile, Brain Buffer works fully offline.",
@@ -224,6 +235,10 @@ fun AuthScreen(
                     value = email,
                     onValueChange = { email = it },
                     label = { Text("Email Address") },
+                    isError = emailInvalid,
+                    supportingText = if (emailInvalid) {
+                        { Text("Enter a valid email address") }
+                    } else null,
                     leadingIcon = { Icon(Icons.Outlined.Email, contentDescription = null) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     singleLine = true,
@@ -237,6 +252,7 @@ fun AuthScreen(
                     value = password,
                     onValueChange = { password = it },
                     label = { Text("Password") },
+                    isError = passwordTooShort,
                     supportingText = if (selectedTab == AuthScreenTab.SIGN_UP) {
                         { Text("Minimum 8 characters") }
                     } else null,
@@ -312,16 +328,16 @@ fun AuthScreen(
 
                 val canSubmit = cloudSync.isConfigured &&
                     !cloudSync.isAuthBusy &&
-                    email.isNotBlank() &&
+                    isEmailValid &&
                     password.isNotBlank() &&
                     (selectedTab == AuthScreenTab.SIGN_IN || (password.length >= 8 && confirmPassword == password))
 
                 LiquidGlassButton(
                     onClick = {
                         if (selectedTab == AuthScreenTab.SIGN_IN) {
-                            onSignIn(email, password)
+                            onSignIn(emailTrimmed, password)
                         } else {
-                            onSignUp(email, password, displayName)
+                            onSignUp(emailTrimmed, password, displayName.trim())
                         }
                     },
                     enabled = canSubmit,
@@ -333,7 +349,7 @@ fun AuthScreen(
                         CircularProgressIndicator(
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp,
-                            color = Color.White
+                            color = MaterialTheme.colorScheme.onPrimary
                         )
                         Spacer(Modifier.width(10.dp))
                     }
@@ -376,7 +392,6 @@ fun AuthScreen(
 
         LiquidGlassCard(modifier = Modifier.fillMaxWidth()) {
             Column(
-                modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
@@ -392,7 +407,8 @@ fun AuthScreen(
                     Text(
                         text = "Privacy-First Cloud Sync",
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
                 Text(

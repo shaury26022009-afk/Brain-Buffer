@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,8 +34,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import com.example.audio.AmbientSoundscapeController
 import com.example.audio.LocalAmbientSoundscapeController
+import com.example.domain.FocusTimerEngine
 import com.example.model.BlockedAppCategory
 import com.example.model.BlockedAppRule
 import com.example.model.SessionPurposeCategory
@@ -51,6 +50,7 @@ import com.example.ui.components.BrainBufferLivePill
 import com.example.ui.navigation.BrainBufferNavigationState
 import com.example.ui.navigation.rememberBrainBufferNavigationState
 import com.example.ui.screens.AuthScreen
+import com.example.ui.screens.ExitSessionConfirmationDialog
 import com.example.ui.screens.FocusScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.InsightsPrimaryScreen
@@ -78,7 +78,8 @@ fun BrainBufferApp(
     openControlledAccessRequest: Boolean = false,
     onControlledAccessRequestConsumed: () -> Unit = {},
     openChangePurposeRequest: Boolean = false,
-    onChangePurposeRequestConsumed: () -> Unit = {}
+    onChangePurposeRequestConsumed: () -> Unit = {},
+    foregroundResumeSignal: Int = 0
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val renderQuality = BrainBufferThemeTokens.renderQuality
@@ -86,13 +87,18 @@ fun BrainBufferApp(
     val context = LocalContext.current
     val currentRoute = navigationState.currentRoute
     val currentTopLevel = navigationState.currentTopLevelDestination
-    val showMainNavigation = navigationState.shouldShowMainNavigation(isZenMode = uiState.timer.isZenMode)
+    val isDedicatedFocusMode = uiState.timer.hasStarted && currentRoute == AppRoutes.FOCUS
+    val showMainNavigation = navigationState.shouldShowMainNavigation(
+        isZenMode = uiState.timer.isZenMode || isDedicatedFocusMode
+    )
     val transitionDuration = renderQuality.transitionDurationMs
 
     var triggerAppSwitchInFocus by remember { mutableStateOf(false) }
     var triggerChangePurposeInFocus by remember { mutableStateOf(false) }
+    var showLivePillExitDialog by remember { mutableStateOf(false) }
 
     var pendingStartAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var hasPromptedNotificationPermission by remember { mutableStateOf(false) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ ->
@@ -102,9 +108,11 @@ fun BrainBufferApp(
 
     val runWithNotificationPermissionCheck: (() -> Unit) -> Unit = { action ->
         val needsPrompt = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !hasPromptedNotificationPermission &&
             uiState.preferences.notificationsEnabled &&
             !BrainBufferNotificationManager.hasNotificationPermission(context)
         if (needsPrompt) {
+            hasPromptedNotificationPermission = true
             pendingStartAction = action
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
@@ -128,19 +136,37 @@ fun BrainBufferApp(
         }
     }
 
-    // Offline synthesized ambient soundscape synced with Focus Timer.
-    // Cleanly stops when session ends, is cancelled, or pauses.
-    val soundscapeController = remember { AmbientSoundscapeController() }
-    LaunchedEffect(uiState.timer.isRunning, uiState.timer.hasStarted) {
-        if (!uiState.timer.hasStarted) {
-            soundscapeController.onTimerRunningChanged(false)
-        } else {
-            soundscapeController.onTimerRunningChanged(uiState.timer.isRunning)
+    // Automatically enter dedicated Focus Mode whenever a session starts.
+    var previousHasStarted by remember { mutableStateOf(uiState.timer.hasStarted) }
+    LaunchedEffect(uiState.timer.hasStarted, uiState.preferences.onboardingCompleted) {
+        if (uiState.timer.hasStarted && !previousHasStarted && uiState.preferences.onboardingCompleted) {
+            if (currentRoute !in setOf(AppRoutes.SPLASH, AppRoutes.ONBOARDING, AppRoutes.AUTH, AppRoutes.FOCUS)) {
+                navigationState.navigateToTopLevel(BottomNavDestination.FOCUS)
+            }
+        }
+        previousHasStarted = uiState.timer.hasStarted
+    }
+
+    // Automatically return to active Focus Mode when the user unlocks the phone or re-enters
+    // the app from background while a focus session is active.
+    LaunchedEffect(
+        foregroundResumeSignal,
+        uiState.preferences.isLoaded,
+        uiState.preferences.onboardingCompleted
+    ) {
+        if (foregroundResumeSignal > 0 &&
+            uiState.preferences.isLoaded &&
+            uiState.preferences.onboardingCompleted &&
+            uiState.timer.hasStarted &&
+            currentRoute !in setOf(AppRoutes.SPLASH, AppRoutes.ONBOARDING, AppRoutes.AUTH, AppRoutes.FOCUS)
+        ) {
+            navigationState.navigateToTopLevel(BottomNavDestination.FOCUS)
         }
     }
-    DisposableEffect(soundscapeController) {
-        onDispose { soundscapeController.release() }
-    }
+
+    // Offline synthesized ambient soundscape hosted in ViewModel so playback survives
+    // configuration changes, screen navigation, and persists across app restarts.
+    val soundscapeController = viewModel.soundscapeController
 
     val lastTopLevelHolder = remember { mutableStateOf(BottomNavDestination.HOME) }
     if (currentTopLevel != null && lastTopLevelHolder.value != currentTopLevel) {
@@ -160,7 +186,8 @@ fun BrainBufferApp(
     }
 
     CompositionLocalProvider(
-        LocalAmbientSoundscapeController provides soundscapeController
+        LocalAmbientSoundscapeController provides soundscapeController,
+        androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.onBackground
     ) {
         BoxWithConstraints(
             modifier = Modifier
@@ -243,7 +270,13 @@ fun BrainBufferApp(
                                     isPreferencesLoaded = uiState.preferences.isLoaded,
                                     onboardingCompleted = uiState.preferences.onboardingCompleted,
                                     onNavigateToOnboarding = navigationState::navigateAfterSplash,
-                                    onNavigateToHome = navigationState::navigateFromSplashToHome
+                                    onNavigateToHome = {
+                                        if (uiState.timer.hasStarted) {
+                                            navigationState.navigateFromSplashToFocus()
+                                        } else {
+                                            navigationState.navigateFromSplashToHome()
+                                        }
+                                    }
                                 )
                             }
 
@@ -255,6 +288,7 @@ fun BrainBufferApp(
                                     appCategoryMappings = uiState.appCategoryMappings,
                                     cloudSync = uiState.cloudSync,
                                     onStepChanged = viewModel::saveOnboardingCurrentStep,
+                                    onSaveDraft = viewModel::saveOnboardingDraft,
                                     onSignIn = { email, password ->
                                         viewModel.signInWithEmail(email, password) {}
                                     },
@@ -344,10 +378,10 @@ fun BrainBufferApp(
                                     },
                                     onTogglePauseResume = {
                                         if (uiState.timer.isRunning) {
-                                            viewModel.pauseTimer()
+                                            viewModel.togglePauseResume()
                                         } else {
                                             runWithNotificationPermissionCheck {
-                                                viewModel.startOrResumeTimer()
+                                                viewModel.togglePauseResume()
                                             }
                                         }
                                     },
@@ -388,6 +422,9 @@ fun BrainBufferApp(
                                             longBreakMinutes = uiState.preferences.longBreakMinutes,
                                             dailyTargetMinutes = goal
                                         )
+                                    },
+                                    onMinimizeFocus = {
+                                        navigationState.navigateToTopLevel(BottomNavDestination.HOME)
                                     }
                                 )
                             }
@@ -491,7 +528,42 @@ fun BrainBufferApp(
                                 },
                                 onReturnToStudy = viewModel::returnToPausedStudySession,
                                 onExtendFiveMin = { viewModel.extendActiveTimer(5) },
-                                onEndSession = viewModel::endSessionEarly
+                                onEndSession = { showLivePillExitDialog = true }
+                            )
+                        }
+
+                        if (showLivePillExitDialog && uiState.timer.hasStarted) {
+                            val exitPreviewSnap = remember(
+                                uiState.timer.snapshot,
+                                uiState.activeTempAccess,
+                                uiState.nowEpochMs,
+                                uiState.nowElapsedMs
+                            ) {
+                                FocusTimerEngine.resolveParentForEarlyExit(
+                                    snapshot = uiState.timer.snapshot,
+                                    activeTempAccess = uiState.activeTempAccess,
+                                    nowEpochMs = uiState.nowEpochMs,
+                                    nowElapsedRealtimeMs = uiState.nowElapsedMs
+                                )
+                            }
+                            val previewElapsedSec = FocusTimerEngine.actualFocusedSeconds(
+                                snapshot = exitPreviewSnap,
+                                nowEpochMs = uiState.nowEpochMs,
+                                nowElapsedRealtimeMs = uiState.nowElapsedMs
+                            )
+                            ExitSessionConfirmationDialog(
+                                sessionName = exitPreviewSnap.sessionGoal.ifBlank { exitPreviewSnap.purposeCategory.label },
+                                elapsedFormatted = BrainBufferNotificationManager.formatMinSec(previewElapsedSec),
+                                plannedMinutes = (exitPreviewSnap.totalSeconds / 60).coerceAtLeast(1),
+                                onFinishEarly = {
+                                    showLivePillExitDialog = false
+                                    viewModel.endSessionEarly()
+                                },
+                                onCancelSession = {
+                                    showLivePillExitDialog = false
+                                    viewModel.resetTimer()
+                                },
+                                onDismiss = { showLivePillExitDialog = false }
                             )
                         }
 

@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -74,6 +75,9 @@ class UserPreferencesStore(private val dataStore: DataStore<Preferences>) {
         val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
         val BREAK_REMINDERS_ENABLED = booleanPreferencesKey("break_reminders_enabled")
         val SOUND_ENABLED = booleanPreferencesKey("sound_enabled")
+        val SOUNDSCAPE_SELECTED = stringPreferencesKey("soundscape_selected")
+        val SOUNDSCAPE_VOLUME = floatPreferencesKey("soundscape_volume")
+        val SOUNDSCAPE_SYNC_WITH_TIMER = booleanPreferencesKey("soundscape_sync_with_timer")
         val HAPTICS_ENABLED = booleanPreferencesKey("haptics_enabled")
         val REDUCED_MOTION_OVERRIDE = booleanPreferencesKey("reduced_motion_override")
         val SEEDS_OWNED = intPreferencesKey("seeds_owned")
@@ -251,7 +255,10 @@ class UserPreferencesStore(private val dataStore: DataStore<Preferences>) {
                 },
                 cloudUsageSummarySyncEnabled = prefs[Keys.CLOUD_USAGE_SUMMARY_SYNC] ?: false,
                 familyControlSettings = decodeFamilyControlSettings(prefs[Keys.FAMILY_CONTROL_JSON]),
-                activeAccountOwnerId = prefs[Keys.ACTIVE_ACCOUNT_OWNER_ID] ?: ""
+                activeAccountOwnerId = prefs[Keys.ACTIVE_ACCOUNT_OWNER_ID] ?: "",
+                selectedSoundscapeKey = prefs[Keys.SOUNDSCAPE_SELECTED] ?: "OFF",
+                soundscapeVolume = (prefs[Keys.SOUNDSCAPE_VOLUME] ?: 0.72f).coerceIn(0.05f, 1.0f),
+                soundscapeSyncWithTimer = prefs[Keys.SOUNDSCAPE_SYNC_WITH_TIMER] ?: true
             )
         }
 
@@ -427,6 +434,30 @@ class UserPreferencesStore(private val dataStore: DataStore<Preferences>) {
     suspend fun saveOnboardingCurrentStep(step: Int) {
         dataStore.edit { prefs ->
             prefs[Keys.ONBOARDING_CURRENT_STEP] = step.coerceIn(0, 7)
+        }
+    }
+
+    suspend fun saveOnboardingDraft(
+        step: Int,
+        userRole: UserProfileRole,
+        studentName: String,
+        selectedPurposes: Set<SessionPurposeCategory>,
+        dailyTargetMinutes: Int,
+        preferredFocusMinutes: Int
+    ) {
+        dataStore.edit { prefs ->
+            prefs[Keys.ONBOARDING_CURRENT_STEP] = step.coerceIn(0, 7)
+            prefs[Keys.USER_PROFILE_ROLE] = userRole.name
+            prefs[Keys.STUDENT_NAME] = studentName.trim().take(36)
+            if (selectedPurposes.isNotEmpty()) {
+                prefs[Keys.STUDY_GOALS] = selectedPurposes.map { it.label }.toSet()
+                val existingGuard = decodeFocusGuardSettings(prefs[Keys.FOCUS_GUARD_SETTINGS_JSON])
+                prefs[Keys.FOCUS_GUARD_SETTINGS_JSON] = encodeFocusGuardSettings(
+                    existingGuard.copy(defaultPurposeCategory = selectedPurposes.first())
+                )
+            }
+            prefs[Keys.DAILY_TARGET_MIN] = dailyTargetMinutes.coerceIn(15, 480)
+            prefs[Keys.PREFERRED_FOCUS_MIN] = preferredFocusMinutes.coerceIn(5, 120)
         }
     }
 
@@ -859,6 +890,18 @@ class UserPreferencesStore(private val dataStore: DataStore<Preferences>) {
             prefs[Keys.SOUND_ENABLED] = soundEnabled
             prefs[Keys.HAPTICS_ENABLED] = hapticsEnabled
             prefs[Keys.REDUCED_MOTION_OVERRIDE] = reducedMotionOverride
+        }
+    }
+
+    suspend fun updateSoundscapeSettings(
+        selectedKey: String,
+        volume: Float,
+        syncWithTimer: Boolean
+    ) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SOUNDSCAPE_SELECTED] = selectedKey
+            prefs[Keys.SOUNDSCAPE_VOLUME] = volume.coerceIn(0.05f, 1.0f)
+            prefs[Keys.SOUNDSCAPE_SYNC_WITH_TIMER] = syncWithTimer
         }
     }
 

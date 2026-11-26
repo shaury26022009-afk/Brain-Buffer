@@ -671,7 +671,10 @@ data class UserPreferences(
     val distractionWarningsWeek: Int = 0,
     val cloudUsageSummarySyncEnabled: Boolean = false,
     val familyControlSettings: FamilyControlSettings = FamilyControlSettings(),
-    val activeAccountOwnerId: String = ""
+    val activeAccountOwnerId: String = "",
+    val selectedSoundscapeKey: String = "OFF",
+    val soundscapeVolume: Float = 0.72f,
+    val soundscapeSyncWithTimer: Boolean = true
 ) {
     val displayName: String get() = studentName.trim().ifBlank { userRole.defaultDisplayName }
     val avatar: StudentAvatar get() = StudentAvatar.entries.firstOrNull { it.key == avatarKey } ?: StudentAvatar.SPARK

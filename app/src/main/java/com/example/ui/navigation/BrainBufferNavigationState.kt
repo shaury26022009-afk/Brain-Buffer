@@ -63,6 +63,24 @@ class BrainBufferNavigationState(
         }
     }
 
+    /**
+     * Restores active Focus Mode directly after cold start / process recreation while keeping
+     * Home cleanly initialized at the root so minimizing Focus Mode returns to Home.
+     */
+    fun navigateFromSplashToFocus() {
+        navController.navigate(AppRoutes.HOME) {
+            popUpTo(AppRoutes.SPLASH) { inclusive = true }
+            launchSingleTop = true
+        }
+        navController.navigate(AppRoutes.FOCUS) {
+            popUpTo(AppRoutes.HOME) {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
     fun navigateAfterOnboarding() {
         navController.navigate(AppRoutes.HOME) {
             popUpTo(AppRoutes.ONBOARDING) { inclusive = true }

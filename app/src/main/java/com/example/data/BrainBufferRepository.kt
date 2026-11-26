@@ -240,6 +240,24 @@ class BrainBufferRepository(
         preferencesStore.saveOnboardingCurrentStep(step)
     }
 
+    suspend fun saveOnboardingDraft(
+        step: Int,
+        userRole: UserProfileRole,
+        studentName: String,
+        selectedPurposes: Set<SessionPurposeCategory>,
+        dailyTargetMinutes: Int,
+        preferredFocusMinutes: Int
+    ) {
+        preferencesStore.saveOnboardingDraft(
+            step = step,
+            userRole = userRole,
+            studentName = studentName,
+            selectedPurposes = selectedPurposes,
+            dailyTargetMinutes = dailyTargetMinutes,
+            preferredFocusMinutes = preferredFocusMinutes
+        )
+    }
+
     suspend fun completeFullOnboarding(
         userRole: UserProfileRole,
         studentName: String,
@@ -435,6 +453,18 @@ class BrainBufferRepository(
             soundEnabled = soundEnabled,
             hapticsEnabled = hapticsEnabled,
             reducedMotionOverride = reducedMotionOverride
+        )
+    }
+
+    suspend fun updateSoundscapeSettings(
+        selectedKey: String,
+        volume: Float,
+        syncWithTimer: Boolean
+    ) {
+        preferencesStore.updateSoundscapeSettings(
+            selectedKey = selectedKey,
+            volume = volume,
+            syncWithTimer = syncWithTimer
         )
     }
 

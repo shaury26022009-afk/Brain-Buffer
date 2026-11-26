@@ -14,7 +14,9 @@ import com.example.cloud.SupabaseAuthResult
 import com.example.cloud.SupabaseConfig
 import com.example.data.BrainBufferRepository
 import com.example.domain.FocusTimerEngine
+import com.example.domain.FocusTimerTick
 import com.example.domain.PurposeMatchingEngine
+import com.example.domain.SystemTimerClock
 import com.example.domain.TemporaryAccessPolicy
 import com.example.model.ActivityCategory
 import com.example.model.ActivityLogRecord
@@ -88,10 +90,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
 @Immutable
 data class ThemeShellState(
@@ -108,7 +113,8 @@ data class FocusTimerUiState(
     val remainingSeconds: Int = 25 * 60,
     val progress: Float = 0f,
     val isZenMode: Boolean = false,
-    val sessionState: com.example.model.FocusSessionState = com.example.model.FocusSessionState.IDLE
+    val sessionState: com.example.model.FocusSessionState = com.example.model.FocusSessionState.IDLE,
+    val elapsedFocusedSeconds: Int = (snapshot.totalSeconds - remainingSeconds).coerceIn(0, snapshot.totalSeconds)
 ) {
     val mode: FocusMode get() = snapshot.mode
     val isRunning: Boolean get() = snapshot.runningSinceEpochMs != null
@@ -125,7 +131,6 @@ data class FocusTimerUiState(
     val focusGuardLevel: com.example.model.FocusGuardLevel get() = snapshot.focusGuardLevel
     val approvedAppLabel: String get() = snapshot.approvedAppLabel
     val linkedTaskId: Long? get() = snapshot.linkedTaskId
-    val elapsedFocusedSeconds: Int get() = (totalSeconds - remainingSeconds).coerceIn(0, totalSeconds)
 
     val formattedTime: String
         get() {
@@ -185,6 +190,7 @@ data class BrainBufferUiState(
     val temporaryAllowances: List<com.example.model.TemporaryAppAllowance> = emptyList(),
     val hasUsageAccessPermission: Boolean = false,
     val nowEpochMs: Long = System.currentTimeMillis(),
+    val nowElapsedMs: Long = SystemClock.elapsedRealtime(),
     val phoneUsageReport: PhoneUsageReport = PhoneUsageReport(),
     val cloudSync: CloudSyncState = CloudSyncState(
         isConfigured = SupabaseConfig.isConfigured
@@ -529,8 +535,33 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         )
     )
     private var tickerJob: Job? = null
+    private var externalTimerSyncJob: Job? = null
     private var isCompletingSession = false
     private val completedSessionIdsInMemory = mutableSetOf<String>()
+    private val snapshotPersistMutex = Mutex()
+    private val inFlightSnapshotWrites = AtomicInteger(0)
+
+    private val timerController: FocusTimerEngine = FocusTimerEngine(
+        scope = viewModelScope,
+        clock = SystemTimerClock,
+        onNaturalCompletion = { completedSnap, _ ->
+            completeCurrentSession(autoCompleted = true, overrideSnapshot = completedSnap)
+        }
+    )
+
+    val soundscapeController: com.example.audio.AmbientSoundscapeController =
+        com.example.audio.AmbientSoundscapeController(
+            context = appContext,
+            onPreferencesChanged = { selected, volume, syncWithTimer ->
+                viewModelScope.launch {
+                    repository.updateSoundscapeSettings(
+                        selectedKey = selected.name,
+                        volume = volume,
+                        syncWithTimer = syncWithTimer
+                    )
+                }
+            }
+        )
 
     private data class CoreDataBundle(
         val prefs: UserPreferences,
@@ -545,7 +576,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         val activityLogs: List<ActivityLogRecord>,
         val strictFocusPresets: List<StrictFocusPreset>,
         val customActivities: List<CustomActivityOption>,
-        val timerSnapshot: PersistedTimerSnapshot
+        val timerTick: FocusTimerTick
     )
 
     private val coreFlow = combine(
@@ -563,9 +594,9 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         repository.activityLogs,
         repository.strictFocusPresets,
         repository.customActivities,
-        repository.timerSnapshot
-    ) { mindNotes, activityLogs, presets, customActs, timerSnapshot ->
-        ExtendedDataBundle(mindNotes, activityLogs, presets, customActs, timerSnapshot)
+        timerController.tickState
+    ) { mindNotes, activityLogs, presets, customActs, timerTick ->
+        ExtendedDataBundle(mindNotes, activityLogs, presets, customActs, timerTick)
     }
 
     private val authClient = SupabaseAuthClient()
@@ -651,12 +682,13 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             else -> CloudSyncStatus.IDLE
         }
 
-        val nowEpoch = local.nowEpochMs
-        val nowElapsed = local.nowElapsedMs
-        val remaining = FocusTimerEngine.remainingSeconds(ext.timerSnapshot, nowEpoch, nowElapsed)
-        val progress = FocusTimerEngine.progress(ext.timerSnapshot, nowEpoch, nowElapsed)
+        val tick = ext.timerTick
+        val nowEpoch = maxOf(local.nowEpochMs, tick.nowEpochMs)
+        val nowElapsed = maxOf(local.nowElapsedMs, tick.nowElapsedRealtimeMs)
+        val remaining = tick.remainingSeconds
+        val progress = tick.progress
         val sessionState = com.example.domain.FocusSessionStateMachine.deriveState(
-            snapshot = ext.timerSnapshot,
+            snapshot = tick.snapshot,
             nowEpochMs = nowEpoch,
             nowElapsedRealtimeMs = nowElapsed,
             isRequestingActivity = local.isRequestingActivity,
@@ -690,6 +722,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             temporaryAllowances = analyticsAndBlocking.tempAllowances,
             hasUsageAccessPermission = local.hasUsageAccessPermission,
             nowEpochMs = nowEpoch,
+            nowElapsedMs = nowElapsed,
             phoneUsageReport = usageReport,
             cloudSync = CloudSyncState(
                 isConfigured = SupabaseConfig.isConfigured,
@@ -702,11 +735,12 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 authNotice = authNotice
             ),
             timer = FocusTimerUiState(
-                snapshot = ext.timerSnapshot,
+                snapshot = tick.snapshot,
                 remainingSeconds = remaining,
                 progress = progress,
                 isZenMode = local.isZenMode,
-                sessionState = sessionState
+                sessionState = sessionState,
+                elapsedFocusedSeconds = tick.elapsedSeconds
             ),
             quoteIndex = local.quoteIndex,
             pendingCelebration = local.pendingCelebration,
@@ -744,8 +778,15 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         )
 
     init {
-        startMonotonicClockTicker()
+        startExternalTimerReconciliation()
+        startAuxiliaryCountdownTicker()
         viewModelScope.launch {
+            val savedPrefs = repository.getPreferencesOnce()
+            soundscapeController.hydratePreferences(
+                selected = com.example.audio.AmbientSoundscape.fromStorageKey(savedPrefs.selectedSoundscapeKey),
+                volume = savedPrefs.soundscapeVolume,
+                syncWithTimer = savedPrefs.soundscapeSyncWithTimer
+            )
             syncTimerOnResume()
             if (AppUsageAwarenessHelper.hasUsageAccessPermission(appContext)) {
                 refreshPhoneUsageAnalytics()
@@ -754,72 +795,117 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 syncCloudNow()
             }
         }
-    }
-
-    /**
-     * Reactive zero-idle clock ticker: sleeps completely with ZERO wakeups when both timer
-     * and manual blocking are idle/paused, and ticks cleanly once per second only while active.
-     */
-    private fun startMonotonicClockTicker() {
-        tickerJob?.cancel()
-        tickerJob = viewModelScope.launch {
-            combine(
-                repository.timerSnapshot.map { (it.runningSinceEpochMs != null) to it.sessionId },
-                repository.manualBlockingSession.map { it.isActive && !it.isPaused },
-                repository.activeTempAccess.map { it != null && it.endedAtEpochMs == null }
-            ) { timerKey, manualRunning, tempAccessActive ->
-                Triple(timerKey.first, tempAccessActive, manualRunning)
-            }
+        viewModelScope.launch {
+            var previouslyStarted = false
+            timerController.tickState
+                .map { tick -> tick.snapshot.hasStarted to tick.isRunning }
                 .distinctUntilChanged()
-                .collectLatest { (isTimerRunning, isTempAccessActive, isManualRunning) ->
-                    if (!isTimerRunning && !isTempAccessActive && !isManualRunning) return@collectLatest
-                    while (isActive) {
-                        val nowEpoch = System.currentTimeMillis()
-                        val nowElapsed = SystemClock.elapsedRealtime()
-                        val state = uiState.value
-                        val snap = state.timer.snapshot
-                        val activeTemp = state.activeTempAccess
-                        val manual = state.manualBlockingSession
-                        val manualStillActive = manual.isEnforcing(nowEpoch)
-                        if (manual.isActive && !manual.isPaused && manual.endsAtEpochMs > 0L && nowEpoch >= manual.endsAtEpochMs) {
-                            repository.saveManualBlockingSession(com.example.model.ManualBlockingSession())
-                        }
-                        if (activeTemp != null && activeTemp.endedAtEpochMs == null && activeTemp.isExpired(nowEpoch)) {
-                            if (ephemeral.value.expiredTempAccessPrompt?.id != activeTemp.id) {
-                                BrainBufferHaptics.perform(
-                                    context = appContext,
-                                    event = HapticEvent.DISTRACTION_ALERT,
-                                    enabled = state.preferences.hapticsEnabled &&
-                                        state.preferences.focusGuardSettings.vibrationEnabled
-                                )
-                                ephemeral.update { it.copy(expiredTempAccessPrompt = activeTemp) }
-                            }
-                        }
-                        val tempStillRunning = activeTemp != null && activeTemp.endedAtEpochMs == null && !activeTemp.isExpired(nowEpoch)
-                        if (snap.runningSinceEpochMs == null && !manualStillActive && !tempStillRunning) break
-                        ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed) }
-                        if (snap.runningSinceEpochMs != null &&
-                            FocusTimerEngine.isCompleted(snap, nowEpoch, nowElapsed) &&
-                            !isCompletingSession
-                        ) {
-                            completeCurrentSession(autoCompleted = true)
-                            if (!manualStillActive && !tempStillRunning) break
-                        }
-                        delay(1000L)
+                .collect { (hasStarted, isRunning) ->
+                    if (previouslyStarted && !hasStarted) {
+                        soundscapeController.onSessionEnded()
+                    } else {
+                        soundscapeController.onTimerRunningChanged(hasStarted && isRunning)
                     }
+                    previouslyStarted = hasStarted
                 }
         }
     }
 
+    private fun persistTimerSnapshot(snapshot: PersistedTimerSnapshot) {
+        inFlightSnapshotWrites.incrementAndGet()
+        viewModelScope.launch {
+            try {
+                snapshotPersistMutex.withLock {
+                    repository.saveTimerSnapshot(snapshot)
+                }
+            } finally {
+                inFlightSnapshotWrites.decrementAndGet()
+            }
+        }
+    }
+
+    private suspend fun persistTimerSnapshotSuspend(snapshot: PersistedTimerSnapshot) {
+        inFlightSnapshotWrites.incrementAndGet()
+        try {
+            snapshotPersistMutex.withLock {
+                repository.saveTimerSnapshot(snapshot)
+            }
+        } finally {
+            inFlightSnapshotWrites.decrementAndGet()
+        }
+    }
+
     /**
-     * Called when Activity resumes or after process recreation:
+     * Reconciles persisted snapshots from DataStore (process recreation, Notification Shade
+     * Pause/Resume/Extend actions, or background [FocusTimerService] completion) into the single
+     * authoritative [timerController] without ever overwriting an in-flight local mutation.
+     */
+    private fun startExternalTimerReconciliation() {
+        externalTimerSyncJob?.cancel()
+        externalTimerSyncJob = viewModelScope.launch {
+            repository.timerSnapshot.collect { persisted ->
+                if (inFlightSnapshotWrites.get() == 0) {
+                    timerController.reconcileExternalSnapshot(persisted)
+                }
+            }
+        }
+    }
+
+    /**
+     * Lightweight auxiliary clock ticker strictly for Temporary App Access and Manual Blocking
+     * countdowns. The primary focus timer ticks independently inside [timerController] via
+     * `SystemClock.elapsedRealtime()` so there are never competing loops and zero wakeups when idle.
+     */
+    private fun startAuxiliaryCountdownTicker() {
+        tickerJob?.cancel()
+        tickerJob = viewModelScope.launch {
+            combine(
+                repository.manualBlockingSession,
+                repository.activeTempAccess
+            ) { manual, tempAccess ->
+                manual to tempAccess
+            }.collectLatest { (manual, activeTemp) ->
+                val manualActive = manual.isActive && !manual.isPaused
+                val tempOpen = activeTemp != null && activeTemp.endedAtEpochMs == null
+                if (!manualActive && !tempOpen) return@collectLatest
+                while (isActive) {
+                    val nowEpoch = System.currentTimeMillis()
+                    val nowElapsed = SystemClock.elapsedRealtime()
+                    val manualStillActive = manual.isEnforcing(nowEpoch)
+                    if (manual.isActive && !manual.isPaused && manual.endsAtEpochMs > 0L && nowEpoch >= manual.endsAtEpochMs) {
+                        repository.saveManualBlockingSession(com.example.model.ManualBlockingSession())
+                    }
+                    if (activeTemp != null && activeTemp.endedAtEpochMs == null && activeTemp.isExpired(nowEpoch)) {
+                        if (ephemeral.value.expiredTempAccessPrompt?.id != activeTemp.id) {
+                            val prefs = uiState.value.preferences
+                            BrainBufferHaptics.perform(
+                                context = appContext,
+                                event = HapticEvent.DISTRACTION_ALERT,
+                                enabled = prefs.hapticsEnabled && prefs.focusGuardSettings.vibrationEnabled
+                            )
+                            ephemeral.update { it.copy(expiredTempAccessPrompt = activeTemp) }
+                        }
+                    }
+                    val tempStillRunning = activeTemp != null && activeTemp.endedAtEpochMs == null && !activeTemp.isExpired(nowEpoch)
+                    ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed) }
+                    if (!manualStillActive && !tempStillRunning) break
+                    delay(1000L)
+                }
+            }
+        }
+    }
+
+    /**
+     * Called when Activity resumes, returns from Android Settings, unlocks screen, or recreates process:
+     * - Immediately resyncs [timerController] against `SystemClock.elapsedRealtime()`.
+     * - Reconciles persisted DataStore state (e.g., notification shade actions or process death).
      * - Restores timer safely via [FocusTimerEngine.restoreAfterProcessRecreation] (never restarts a completed timer).
-     * - Refreshes real Android Usage Access permission state.
-     * - Prunes expired temporary app allowances.
+     * - Refreshes real Android Usage Access permission state and prunes expired temporary app allowances.
      */
     fun syncTimerOnResume() {
-        val nowEpoch = System.currentTimeMillis()
-        val nowElapsed = SystemClock.elapsedRealtime()
+        val tick = timerController.syncWithClock()
+        val nowEpoch = tick.nowEpochMs
+        val nowElapsed = tick.nowElapsedRealtimeMs
         val usageGranted = AppUsageAwarenessHelper.hasUsageAccessPermission(appContext)
         ephemeral.update {
             it.copy(
@@ -830,6 +916,10 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         }
         viewModelScope.launch {
             val snap = repository.getTimerSnapshotOnce()
+            if (inFlightSnapshotWrites.get() == 0) {
+                timerController.reconcileExternalSnapshot(snap)
+            }
+            val authoritativeSnap = timerController.snapshot
             val manual = repository.getManualBlockingSessionOnce()
             val allowances = repository.getTemporaryAllowancesOnce()
             val activeAllowances = allowances.filter { it.isActive(nowEpoch) }
@@ -841,24 +931,25 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             }
 
             when (val restored = FocusTimerEngine.restoreAfterProcessRecreation(
-                snapshot = snap,
+                snapshot = authoritativeSnap,
                 nowEpochMs = nowEpoch,
                 nowElapsedRealtimeMs = nowElapsed,
-                completedSessionIds = completedSessionIdsInMemory
+                completedSessionIds = completedSessionIdsInMemory + timerController.snapshotCompletedSessionIds()
             )) {
                 is FocusTimerEngine.ProcessRestorationResult.NaturalCompletionPending -> {
                     if (!isCompletingSession) {
-                        completeCurrentSession(autoCompleted = true)
+                        completeCurrentSession(autoCompleted = true, overrideSnapshot = authoritativeSnap)
                     }
                 }
                 is FocusTimerEngine.ProcessRestorationResult.AlreadyCompleted -> {
-                    if (snap.hasStarted || snap.runningSinceEpochMs != null) {
-                        repository.saveTimerSnapshot(restored.snapshot)
+                    if (authoritativeSnap.hasStarted || authoritativeSnap.runningSinceEpochMs != null) {
+                        timerController.applyTransition { _, _, _ -> restored.snapshot }
+                        persistTimerSnapshotSuspend(restored.snapshot)
                     }
                 }
                 is FocusTimerEngine.ProcessRestorationResult.Running,
                 is FocusTimerEngine.ProcessRestorationResult.Paused -> {
-                    FocusTimerService.syncWithSnapshot(appContext, snap)
+                    FocusTimerService.syncWithSnapshot(appContext, authoritativeSnap)
                 }
                 is FocusTimerEngine.ProcessRestorationResult.Idle -> {
                     if (manual.isEnforcing(nowEpoch) && usageGranted) {
@@ -934,6 +1025,26 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     fun saveOnboardingCurrentStep(step: Int) {
         viewModelScope.launch {
             repository.saveOnboardingCurrentStep(step)
+        }
+    }
+
+    fun saveOnboardingDraft(
+        step: Int,
+        userRole: UserProfileRole,
+        studentName: String,
+        selectedPurposes: Set<SessionPurposeCategory>,
+        dailyTargetMinutes: Int,
+        preferredFocusMinutes: Int
+    ) {
+        viewModelScope.launch {
+            repository.saveOnboardingDraft(
+                step = step,
+                userRole = userRole,
+                studentName = studentName,
+                selectedPurposes = selectedPurposes,
+                dailyTargetMinutes = dailyTargetMinutes,
+                preferredFocusMinutes = preferredFocusMinutes
+            )
         }
     }
 
@@ -1034,14 +1145,21 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 longBreakMinutes = longBreakMinutes,
                 dailyTargetMinutes = dailyTargetMinutes
             )
-            val snap = uiState.value.timer.snapshot
+            val snap = timerController.snapshot
             if (!snap.hasStarted && snap.runningSinceEpochMs == null) {
                 val mins = when (snap.mode) {
                     FocusMode.FOCUS -> preferredFocusMinutes
                     FocusMode.SHORT_BREAK -> shortBreakMinutes
                     FocusMode.LONG_BREAK -> longBreakMinutes
                 }
-                repository.saveTimerSnapshot(FocusTimerEngine.configureMode(snap, snap.mode, mins))
+                val updated = timerController.applyTransition { current, _, _ ->
+                    if (!current.hasStarted && current.runningSinceEpochMs == null) {
+                        FocusTimerEngine.configureMode(current, current.mode, mins)
+                    } else {
+                        current
+                    }
+                }
+                persistTimerSnapshotSuspend(updated)
             }
         }
     }
@@ -1084,86 +1202,96 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    private var usageSuggestionJob: Job? = null
+
     fun refreshAppUsageSuggestion() {
         val state = uiState.value
         val prefs = state.preferences
         if (!prefs.appUsageAwarenessEnabled) {
+            usageSuggestionJob?.cancel()
             ephemeral.update { it.copy(appUsageSuggestion = null, unapprovedAppWarning = null) }
             return
         }
+        if (usageSuggestionJob?.isActive == true) return
         val mappings = state.appCategoryMappings
-        val suggestion = AppUsageAwarenessHelper.detectRecentAppSuggestion(
-            context = appContext,
-            enabledByUser = true,
-            userMappings = mappings
-        )
-        val nowEpoch = System.currentTimeMillis()
         val snap = state.timer.snapshot
-        val warning = if (snap.hasStarted && snap.runningSinceEpochMs != null && !snap.isOnBreak) {
-            val fgPkg = AppUsageAwarenessHelper.queryCurrentForegroundPackage(
+        val activeTemp = state.activeTempAccess
+        val hapticsAllowed = prefs.hapticsEnabled && prefs.focusGuardSettings.vibrationEnabled
+        val graceSec = prefs.focusGuardSettings.gracePeriodSeconds
+        val cooldownSec = prefs.focusGuardSettings.distractionCooldownSeconds
+
+        usageSuggestionJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val suggestion = AppUsageAwarenessHelper.detectRecentAppSuggestion(
                 context = appContext,
                 enabledByUser = true,
-                nowEpochMs = nowEpoch
+                userMappings = mappings
             )
-            if (fgPkg != null) {
-                val fgLabel = runCatching {
-                    val pm = appContext.packageManager
-                    pm.getApplicationLabel(pm.getApplicationInfo(fgPkg, 0)).toString()
-                }.getOrDefault(fgPkg.substringAfterLast('.'))
-                when (
-                    val match = PurposeMatchingEngine.evaluateForegroundApp(
-                        observedPackage = fgPkg,
-                        observedAppLabel = fgLabel,
-                        snapshot = snap,
-                        activeTempAccess = state.activeTempAccess,
-                        nowEpochMs = nowEpoch,
-                        ownPackageName = appContext.packageName,
-                        gracePeriodSeconds = prefs.focusGuardSettings.gracePeriodSeconds,
-                        cooldownSeconds = prefs.focusGuardSettings.distractionCooldownSeconds,
-                        enforceGracePeriod = false
-                    )
-                ) {
-                    is PurposeMatchingEngine.MatchDecision.PotentialDistraction -> {
-                        val observedCat = AppUsageAwarenessHelper
-                            .matchPackageToSuggestion(fgPkg, mappings)
-                            ?.suggestedActivity
-                            ?.category
-                            ?: ActivityCategory.OTHER
-                        com.example.model.UnapprovedAppWarning(
-                            packageName = match.packageName,
-                            appDisplayName = match.appLabel,
-                            observedCategory = observedCat,
-                            message = match.message
+            val nowEpoch = System.currentTimeMillis()
+            val warning = if (snap.hasStarted && snap.runningSinceEpochMs != null && !snap.isOnBreak) {
+                val fgPkg = AppUsageAwarenessHelper.queryCurrentForegroundPackage(
+                    context = appContext,
+                    enabledByUser = true,
+                    nowEpochMs = nowEpoch
+                )
+                if (fgPkg != null) {
+                    val fgLabel = runCatching {
+                        val pm = appContext.packageManager
+                        pm.getApplicationLabel(pm.getApplicationInfo(fgPkg, 0)).toString()
+                    }.getOrDefault(fgPkg.substringAfterLast('.'))
+                    when (
+                        val match = PurposeMatchingEngine.evaluateForegroundApp(
+                            observedPackage = fgPkg,
+                            observedAppLabel = fgLabel,
+                            snapshot = snap,
+                            activeTempAccess = activeTemp,
+                            nowEpochMs = nowEpoch,
+                            ownPackageName = appContext.packageName,
+                            gracePeriodSeconds = graceSec,
+                            cooldownSeconds = cooldownSec,
+                            enforceGracePeriod = false
                         )
+                    ) {
+                        is PurposeMatchingEngine.MatchDecision.PotentialDistraction -> {
+                            val observedCat = AppUsageAwarenessHelper
+                                .matchPackageToSuggestion(fgPkg, mappings)
+                                ?.suggestedActivity
+                                ?.category
+                                ?: ActivityCategory.OTHER
+                            com.example.model.UnapprovedAppWarning(
+                                packageName = match.packageName,
+                                appDisplayName = match.appLabel,
+                                observedCategory = observedCat,
+                                message = match.message
+                            )
+                        }
+                        else -> null
                     }
-                    else -> null
+                } else {
+                    null
                 }
             } else {
                 null
             }
-        } else {
-            null
-        }
-        val isNewWarning = warning != null &&
-            warning.packageName != ephemeral.value.unapprovedAppWarning?.packageName
-        if (isNewWarning) {
-            BrainBufferHaptics.perform(
-                context = appContext,
-                event = HapticEvent.DISTRACTION_ALERT,
-                enabled = state.preferences.hapticsEnabled &&
-                    state.preferences.focusGuardSettings.vibrationEnabled
-            )
-        }
-        ephemeral.update { current ->
-            val filteredSuggestion = if (suggestion != null && suggestion.packageName == current.dismissedSuggestionPkg) {
-                current.appUsageSuggestion
-            } else {
-                suggestion
+            val isNewWarning = warning != null &&
+                warning.packageName != ephemeral.value.unapprovedAppWarning?.packageName
+            if (isNewWarning) {
+                BrainBufferHaptics.perform(
+                    context = appContext,
+                    event = HapticEvent.DISTRACTION_ALERT,
+                    enabled = hapticsAllowed
+                )
             }
-            current.copy(
-                appUsageSuggestion = filteredSuggestion,
-                unapprovedAppWarning = warning
-            )
+            ephemeral.update { current ->
+                val filteredSuggestion = if (suggestion != null && suggestion.packageName == current.dismissedSuggestionPkg) {
+                    current.appUsageSuggestion
+                } else {
+                    suggestion
+                }
+                current.copy(
+                    appUsageSuggestion = filteredSuggestion,
+                    unapprovedAppWarning = warning
+                )
+            }
         }
     }
 
@@ -1256,9 +1384,12 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     fun deleteSubject(subjectId: Long) {
         viewModelScope.launch {
             repository.deleteSubject(subjectId)
-            val snap = uiState.value.timer.snapshot
+            val snap = timerController.snapshot
             if (snap.selectedSubjectId == subjectId) {
-                repository.saveTimerSnapshot(snap.copy(selectedSubjectId = null))
+                val updated = timerController.applyTransition { current, _, _ ->
+                    if (current.selectedSubjectId == subjectId) current.copy(selectedSubjectId = null) else current
+                }
+                persistTimerSnapshotSuspend(updated)
             }
         }
     }
@@ -1333,44 +1464,48 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             FocusMode.SHORT_BREAK -> prefs.shortBreakMinutes
             FocusMode.LONG_BREAK -> prefs.longBreakMinutes
         }
+        val next = timerController.applyTransition { current, _, _ ->
+            FocusTimerEngine.configureMode(current, mode, minutes)
+        }
+        ephemeral.update {
+            it.copy(nowEpochMs = System.currentTimeMillis(), nowElapsedMs = SystemClock.elapsedRealtime())
+        }
         viewModelScope.launch {
-            val next = FocusTimerEngine.configureMode(uiState.value.timer.snapshot, mode, minutes)
-            repository.saveTimerSnapshot(next)
+            persistTimerSnapshotSuspend(next)
             restoreDndIfNeeded()
             FocusTimerService.stopService(appContext)
-            ephemeral.update {
-                it.copy(nowEpochMs = System.currentTimeMillis(), nowElapsedMs = SystemClock.elapsedRealtime())
-            }
         }
     }
 
     fun setCustomTimerDuration(minutes: Int) {
         val clamped = minutes.coerceIn(1, 180)
-        val snap = uiState.value.timer.snapshot
+        val next = timerController.applyTransition { current, _, _ ->
+            FocusTimerEngine.configureMode(current, current.mode, clamped)
+        }
+        ephemeral.update {
+            it.copy(nowEpochMs = System.currentTimeMillis(), nowElapsedMs = SystemClock.elapsedRealtime())
+        }
         viewModelScope.launch {
-            val next = FocusTimerEngine.configureMode(snap, snap.mode, clamped)
-            repository.saveTimerSnapshot(next)
+            persistTimerSnapshotSuspend(next)
             FocusTimerService.stopService(appContext)
-            ephemeral.update {
-                it.copy(nowEpochMs = System.currentTimeMillis(), nowElapsedMs = SystemClock.elapsedRealtime())
-            }
         }
     }
 
     fun selectTimerSubject(subjectId: Long?) {
-        val snap = uiState.value.timer.snapshot
+        val updated = timerController.applyTransition { current, _, _ ->
+            current.copy(selectedSubjectId = subjectId)
+        }
         viewModelScope.launch {
-            val updated = snap.copy(selectedSubjectId = subjectId)
-            repository.saveTimerSnapshot(updated)
+            persistTimerSnapshotSuspend(updated)
             if (updated.hasStarted) FocusTimerService.syncWithSnapshot(appContext, updated)
         }
     }
 
     fun updateSessionGoal(goal: String) {
-        val snap = uiState.value.timer.snapshot
-        viewModelScope.launch {
-            repository.saveTimerSnapshot(snap.copy(sessionGoal = goal.take(80)))
+        val updated = timerController.applyTransition { current, _, _ ->
+            current.copy(sessionGoal = goal.take(80))
         }
+        persistTimerSnapshot(updated)
     }
 
     fun toggleZenMode() {
@@ -1402,20 +1537,29 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         )
     }
 
+    fun togglePauseResume() {
+        val currentlyRunning = timerController.snapshot.runningSinceEpochMs != null
+        if (currentlyRunning) {
+            pauseTimer()
+        } else {
+            startOrResumeTimer()
+        }
+    }
+
     fun startOrResumeTimer() {
-        val nowEpoch = System.currentTimeMillis()
-        val nowElapsed = SystemClock.elapsedRealtime()
-        val snap = uiState.value.timer.snapshot
-        val hapticEvent = if (!snap.hasStarted) HapticEvent.SESSION_START else HapticEvent.PAUSE_OR_RESUME
+        val hadStarted = timerController.snapshot.hasStarted
+        val started = timerController.startOrResume()
+        val nowEpoch = started.runningSinceEpochMs ?: System.currentTimeMillis()
+        val nowElapsed = started.runningSinceElapsedRealtimeMs ?: SystemClock.elapsedRealtime()
+        val hapticEvent = if (!hadStarted) HapticEvent.SESSION_START else HapticEvent.PAUSE_OR_RESUME
         BrainBufferHaptics.perform(
             context = appContext,
             event = hapticEvent,
             enabled = uiState.value.preferences.hapticsEnabled
         )
-        val started = FocusTimerEngine.startOrResume(snap, nowEpoch, nowElapsed)
         ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed, wasRecentlyCancelled = false) }
         viewModelScope.launch {
-            repository.saveTimerSnapshot(started)
+            persistTimerSnapshotSuspend(started)
             syncStudySessionRecord(started, "RUNNING", nowEpoch, nowElapsed)
             FocusTimerService.syncWithSnapshot(appContext, started)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
@@ -1423,18 +1567,19 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun startQuickFocus(subjectId: Long? = null) {
-        val nowEpoch = System.currentTimeMillis()
-        val nowElapsed = SystemClock.elapsedRealtime()
         val prefs = uiState.value.preferences
-        val currentSnap = uiState.value.timer.snapshot
-        val base = if (currentSnap.mode != FocusMode.FOCUS || currentSnap.isSwitchedActivity) {
-            FocusTimerEngine.configureMode(currentSnap, FocusMode.FOCUS, prefs.preferredFocusMinutes)
-        } else {
-            currentSnap
-        }.let { snap ->
-            if (subjectId != null) snap.copy(selectedSubjectId = subjectId) else snap
+        val running = timerController.applyTransition { currentSnap, nowEpoch, nowElapsed ->
+            val base = if (currentSnap.mode != FocusMode.FOCUS || currentSnap.isSwitchedActivity) {
+                FocusTimerEngine.configureMode(currentSnap, FocusMode.FOCUS, prefs.preferredFocusMinutes)
+            } else {
+                currentSnap
+            }.let { snap ->
+                if (subjectId != null) snap.copy(selectedSubjectId = subjectId) else snap
+            }
+            FocusTimerEngine.startOrResume(base, nowEpoch, nowElapsed)
         }
-        val running = FocusTimerEngine.startOrResume(base, nowEpoch, nowElapsed)
+        val nowEpoch = running.runningSinceEpochMs ?: System.currentTimeMillis()
+        val nowElapsed = running.runningSinceElapsedRealtimeMs ?: SystemClock.elapsedRealtime()
         BrainBufferHaptics.perform(
             context = appContext,
             event = HapticEvent.SESSION_START,
@@ -1442,7 +1587,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         )
         ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed, wasRecentlyCancelled = false) }
         viewModelScope.launch {
-            repository.saveTimerSnapshot(running)
+            persistTimerSnapshotSuspend(running)
             syncStudySessionRecord(running, "RUNNING", nowEpoch, nowElapsed)
             FocusTimerService.syncWithSnapshot(appContext, running)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
@@ -1453,17 +1598,19 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
      * Launches a Focus session pre-configured with a Planner task's subject, title, and estimated duration.
      */
     fun startFocusForTask(task: StudyTask) {
-        val nowEpoch = System.currentTimeMillis()
-        val nowElapsed = SystemClock.elapsedRealtime()
         val durationMin = task.estimatedMinutes.coerceIn(10, 120)
-        val currentSnap = uiState.value.timer.snapshot
-        val configured = FocusTimerEngine.configureMode(currentSnap, FocusMode.FOCUS, durationMin).copy(
-            selectedSubjectId = task.subjectId,
-            sessionGoal = task.title.take(80),
-            linkedTaskId = task.id,
-            focusGuardLevel = uiState.value.preferences.focusGuardSettings.defaultLevel
-        )
-        val running = FocusTimerEngine.startOrResume(configured, nowEpoch, nowElapsed)
+        val defaultGuardLevel = uiState.value.preferences.focusGuardSettings.defaultLevel
+        val running = timerController.applyTransition { currentSnap, nowEpoch, nowElapsed ->
+            val configured = FocusTimerEngine.configureMode(currentSnap, FocusMode.FOCUS, durationMin).copy(
+                selectedSubjectId = task.subjectId,
+                sessionGoal = task.title.take(80),
+                linkedTaskId = task.id,
+                focusGuardLevel = defaultGuardLevel
+            )
+            FocusTimerEngine.startOrResume(configured, nowEpoch, nowElapsed)
+        }
+        val nowEpoch = running.runningSinceEpochMs ?: System.currentTimeMillis()
+        val nowElapsed = running.runningSinceElapsedRealtimeMs ?: SystemClock.elapsedRealtime()
         BrainBufferHaptics.perform(
             context = appContext,
             event = HapticEvent.SESSION_START,
@@ -1471,7 +1618,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         )
         ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed, wasRecentlyCancelled = false) }
         viewModelScope.launch {
-            repository.saveTimerSnapshot(running)
+            persistTimerSnapshotSuspend(running)
             syncStudySessionRecord(running, "RUNNING", nowEpoch, nowElapsed)
             FocusTimerService.syncWithSnapshot(appContext, running)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
@@ -1479,17 +1626,15 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun selectLinkedTask(taskId: Long?) {
-        val snap = uiState.value.timer.snapshot
         val task = uiState.value.tasks.firstOrNull { it.id == taskId }
-        viewModelScope.launch {
-            repository.saveTimerSnapshot(
-                snap.copy(
-                    linkedTaskId = task?.id,
-                    selectedSubjectId = task?.subjectId ?: snap.selectedSubjectId,
-                    sessionGoal = if (task != null && snap.sessionGoal.isBlank()) task.title.take(80) else snap.sessionGoal
-                )
+        val updated = timerController.applyTransition { snap, _, _ ->
+            snap.copy(
+                linkedTaskId = task?.id,
+                selectedSubjectId = task?.subjectId ?: snap.selectedSubjectId,
+                sessionGoal = if (task != null && snap.sessionGoal.isBlank()) task.title.take(80) else snap.sessionGoal
             )
         }
+        persistTimerSnapshot(updated)
     }
 
     fun markLinkedTaskCompleted(taskId: Long) {
@@ -1500,6 +1645,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun pauseTimer() {
+        val paused = timerController.pause()
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
         BrainBufferHaptics.perform(
@@ -1507,10 +1653,9 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             event = HapticEvent.PAUSE_OR_RESUME,
             enabled = uiState.value.preferences.hapticsEnabled
         )
-        val paused = FocusTimerEngine.pause(uiState.value.timer.snapshot, nowEpoch, nowElapsed)
         ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed) }
         viewModelScope.launch {
-            repository.saveTimerSnapshot(paused)
+            persistTimerSnapshotSuspend(paused)
             syncStudySessionRecord(paused, "PAUSED", nowEpoch, nowElapsed)
             FocusTimerService.syncWithSnapshot(appContext, paused)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
@@ -1520,9 +1665,9 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     fun resetTimer() {
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
-        val prevSnap = uiState.value.timer.snapshot
+        val prevSnap = timerController.snapshot
         val prevSessionId = prevSnap.sessionId
-        val reset = FocusTimerEngine.reset(prevSnap)
+        val reset = timerController.reset()
         BrainBufferNotificationManager.cancelDistractionWarningNotification(appContext)
         com.example.system.DistractionAlertCoordinator.clearSession(prevSessionId)
         ephemeral.update {
@@ -1559,7 +1704,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 )
             }
             repository.saveActiveTempAccess(null)
-            repository.saveTimerSnapshot(reset)
+            persistTimerSnapshotSuspend(reset)
             restoreDndIfNeeded()
             FocusTimerService.stopService(appContext)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
@@ -1599,6 +1744,8 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             nowElapsedRealtimeMs = nowElapsed
         ) ?: return false
 
+        timerController.applyTransition { _, _, _ -> started }
+
         BrainBufferHaptics.perform(
             context = appContext,
             event = HapticEvent.SESSION_START,
@@ -1618,7 +1765,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         }
         viewModelScope.launch {
             repository.saveActiveTempAccess(null)
-            repository.saveTimerSnapshot(started)
+            persistTimerSnapshotSuspend(started)
             syncStudySessionRecord(started, "RUNNING", nowEpoch, nowElapsed)
             FocusTimerService.syncWithSnapshot(appContext, started)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
@@ -1637,9 +1784,8 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         launchAfterGrant: Boolean = true
     ): Boolean {
         val nowEpoch = System.currentTimeMillis()
-        val nowElapsed = SystemClock.elapsedRealtime()
         val state = uiState.value
-        val snap = state.timer.snapshot
+        val snap = timerController.snapshot
         if (!snap.hasStarted) return false
 
         val result = TemporaryAccessPolicy.startTemporaryAccess(
@@ -1658,15 +1804,18 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 false
             }
             is TemporaryAccessPolicy.StartResult.Started -> {
-                val pausedParent = FocusTimerEngine.pauseForTemporaryAccess(snap, nowEpoch, nowElapsed)
                 val replacedSeconds = result.replacedPrevious?.actualDurationSeconds(nowEpoch) ?: 0
-                val updatedParent = if (replacedSeconds > 0) {
-                    pausedParent.copy(
-                        accumulatedTempAccessSeconds = pausedParent.accumulatedTempAccessSeconds + replacedSeconds
-                    )
-                } else {
-                    pausedParent
+                val updatedParent = timerController.applyTransition { current, epoch, elapsed ->
+                    val pausedParent = FocusTimerEngine.pauseForTemporaryAccess(current, epoch, elapsed)
+                    if (replacedSeconds > 0) {
+                        pausedParent.copy(
+                            accumulatedTempAccessSeconds = pausedParent.accumulatedTempAccessSeconds + replacedSeconds
+                        )
+                    } else {
+                        pausedParent
+                    }
                 }
+                val nowElapsed = SystemClock.elapsedRealtime()
                 BrainBufferHaptics.perform(
                     context = appContext,
                     event = HapticEvent.PAUSE_OR_RESUME,
@@ -1682,7 +1831,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                     )
                 }
                 viewModelScope.launch {
-                    repository.saveTimerSnapshot(updatedParent)
+                    persistTimerSnapshotSuspend(updatedParent)
                     repository.saveActiveTempAccess(result.session)
                     repository.logInterventionEvent(
                         InterventionEventRecord(
@@ -1766,14 +1915,15 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
         val state = uiState.value
-        val snap = state.timer.snapshot
         val temp = state.activeTempAccess ?: state.expiredTempAccessPrompt
         val closed = temp?.let { TemporaryAccessPolicy.closeTemporaryAccess(it, nowEpoch) }
         val actualTempSec = closed?.actualDurationSeconds(nowEpoch) ?: 0
-        val resumed = if (snap.hasStarted) {
-            FocusTimerEngine.resumeFromTemporaryAccess(snap, actualTempSec, nowEpoch, nowElapsed)
-        } else {
-            snap
+        val resumed = timerController.applyTransition { current, epoch, elapsed ->
+            if (current.hasStarted) {
+                FocusTimerEngine.resumeFromTemporaryAccess(current, actualTempSec, epoch, elapsed)
+            } else {
+                current
+            }
         }
         BrainBufferHaptics.perform(
             context = appContext,
@@ -1808,8 +1958,8 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                     )
                 )
             }
-            if (snap.hasStarted) {
-                repository.saveTimerSnapshot(resumed)
+            if (resumed.hasStarted) {
+                persistTimerSnapshotSuspend(resumed)
                 FocusTimerService.syncWithSnapshot(appContext, resumed)
             }
         }
@@ -1824,15 +1974,17 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         newAllowedApps: List<SelectedSessionApp>
     ) {
         val nowEpoch = System.currentTimeMillis()
-        val snap = uiState.value.timer.snapshot
-        if (!snap.hasStarted) return
-        val updated = PurposeMatchingEngine.switchPurpose(
-            current = snap,
-            newPurpose = newPurpose,
-            newSessionName = newSessionName,
-            newAllowedPackages = newAllowedApps.map { it.packageName }.toSet(),
-            newAllowedLabels = newAllowedApps.map { it.appLabel }
-        )
+        val prevSnap = timerController.snapshot
+        if (!prevSnap.hasStarted) return
+        val updated = timerController.applyTransition { current, _, _ ->
+            PurposeMatchingEngine.switchPurpose(
+                current = current,
+                newPurpose = newPurpose,
+                newSessionName = newSessionName,
+                newAllowedPackages = newAllowedApps.map { it.packageName }.toSet(),
+                newAllowedLabels = newAllowedApps.map { it.appLabel }
+            )
+        }
         ephemeral.update {
             it.copy(
                 nowEpochMs = nowEpoch,
@@ -1841,12 +1993,12 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             )
         }
         viewModelScope.launch {
-            repository.saveTimerSnapshot(updated)
+            persistTimerSnapshotSuspend(updated)
             repository.logInterventionEvent(
                 InterventionEventRecord(
-                    sessionKey = snap.sessionId,
+                    sessionKey = prevSnap.sessionId,
                     eventType = InterventionEventType.PURPOSE_SWITCHED,
-                    declaredPurpose = "${snap.purposeCategory.label} -> ${newPurpose.label}",
+                    declaredPurpose = "${prevSnap.purposeCategory.label} -> ${newPurpose.label}",
                     actionTaken = "CHANGE_PURPOSE",
                     timestampMs = nowEpoch,
                     dateEpochDay = LocalDate.now().toEpochDay()
@@ -1863,24 +2015,25 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         estimatedDistractionSeconds: Int = 30
     ) {
         val nowEpoch = System.currentTimeMillis()
-        val snap = uiState.value.timer.snapshot
-        val updatedSnap = if (snap.hasStarted) {
-            FocusTimerEngine.recordDistractionIntervention(snap, estimatedDistractionSeconds)
-        } else {
-            snap
+        val updatedSnap = timerController.applyTransition { current, _, _ ->
+            if (current.hasStarted) {
+                FocusTimerEngine.recordDistractionIntervention(current, estimatedDistractionSeconds)
+            } else {
+                current
+            }
         }
         ephemeral.update { it.copy(unapprovedAppWarning = null) }
         viewModelScope.launch {
-            if (snap.hasStarted) {
-                repository.saveTimerSnapshot(updatedSnap)
+            if (updatedSnap.hasStarted) {
+                persistTimerSnapshotSuspend(updatedSnap)
             }
             repository.logInterventionEvent(
                 InterventionEventRecord(
-                    sessionKey = snap.sessionId,
+                    sessionKey = updatedSnap.sessionId,
                     eventType = InterventionEventType.POTENTIAL_DISTRACTION,
                     packageName = packageName,
                     appLabel = appLabel,
-                    declaredPurpose = snap.purposeCategory.label,
+                    declaredPurpose = updatedSnap.purposeCategory.label,
                     actionTaken = actionTaken,
                     actualSeconds = estimatedDistractionSeconds,
                     timestampMs = nowEpoch,
@@ -1911,7 +2064,35 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
         val currentState = uiState.value
-        val currentSnap = currentState.timer.snapshot
+        val currentSnap = timerController.snapshot
+
+        val switched = timerController.applyTransition { latestSnap, epoch, elapsed ->
+            FocusTimerEngine.switchActivity(
+                current = latestSnap,
+                activityType = activityType,
+                activityLabel = activityLabel,
+                category = category,
+                durationMinutes = durationMinutes,
+                subjectId = subjectId,
+                wasPlanned = wasPlanned,
+                nowEpochMs = epoch,
+                nowElapsedRealtimeMs = elapsed,
+                approvedPackageName = approvedPackageName,
+                approvedAppLabel = approvedAppLabel,
+                approvedDocumentUri = approvedDocumentUri
+            )
+        }
+        ephemeral.update {
+            it.copy(
+                nowEpochMs = nowEpoch,
+                nowElapsedMs = nowElapsed,
+                appUsageSuggestion = null,
+                unapprovedAppWarning = null,
+                isRequestingActivity = false,
+                pendingCelebration = null,
+                wasRecentlyCancelled = false
+            )
+        }
 
         viewModelScope.launch {
             // If we were already on another switched activity with >=30s elapsed, log it before switching again
@@ -1938,33 +2119,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                     )
                 }
             }
-
-            val switched = FocusTimerEngine.switchActivity(
-                current = currentSnap,
-                activityType = activityType,
-                activityLabel = activityLabel,
-                category = category,
-                durationMinutes = durationMinutes,
-                subjectId = subjectId,
-                wasPlanned = wasPlanned,
-                nowEpochMs = nowEpoch,
-                nowElapsedRealtimeMs = nowElapsed,
-                approvedPackageName = approvedPackageName,
-                approvedAppLabel = approvedAppLabel,
-                approvedDocumentUri = approvedDocumentUri
-            )
-            ephemeral.update {
-                it.copy(
-                    nowEpochMs = nowEpoch,
-                    nowElapsedMs = nowElapsed,
-                    appUsageSuggestion = null,
-                    unapprovedAppWarning = null,
-                    isRequestingActivity = false,
-                    pendingCelebration = null,
-                    wasRecentlyCancelled = false
-                )
-            }
-            repository.saveTimerSnapshot(switched)
+            persistTimerSnapshotSuspend(switched)
             FocusTimerService.syncWithSnapshot(appContext, switched)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
         }
@@ -1981,7 +2136,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             activityLabel = "Taking a short break",
             category = ActivityCategory.BREAK,
             durationMinutes = breakMinutes.coerceIn(2, 60),
-            subjectId = uiState.value.timer.selectedSubjectId,
+            subjectId = timerController.snapshot.selectedSubjectId,
             wasPlanned = true
         )
     }
@@ -1993,13 +2148,28 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
         val currentState = uiState.value
-        val snap = currentState.timer.snapshot
+        val snap = timerController.snapshot
         if (snap.pausedParentSession == null) return
         BrainBufferHaptics.perform(
             context = appContext,
             event = HapticEvent.PAUSE_OR_RESUME,
             enabled = currentState.preferences.hapticsEnabled
         )
+
+        val resumed = timerController.applyTransition { latestSnap, epoch, elapsed ->
+            FocusTimerEngine.returnToPausedStudySession(latestSnap, epoch, elapsed)
+                ?: FocusTimerEngine.reset(latestSnap)
+        }
+        BrainBufferNotificationManager.cancelCompletionNotification(appContext)
+        BrainBufferNotificationManager.cancelDistractionWarningNotification(appContext)
+        ephemeral.update {
+            it.copy(
+                nowEpochMs = nowEpoch,
+                nowElapsedMs = nowElapsed,
+                pendingCelebration = null,
+                unapprovedAppWarning = null
+            )
+        }
 
         viewModelScope.launch {
             val elapsedSec = FocusTimerEngine.actualFocusedSeconds(snap, nowEpoch, nowElapsed)
@@ -2023,20 +2193,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                     )
                 )
             }
-
-            val resumed = FocusTimerEngine.returnToPausedStudySession(snap, nowEpoch, nowElapsed)
-                ?: FocusTimerEngine.reset(snap)
-            BrainBufferNotificationManager.cancelCompletionNotification(appContext)
-            BrainBufferNotificationManager.cancelDistractionWarningNotification(appContext)
-            ephemeral.update {
-                it.copy(
-                    nowEpochMs = nowEpoch,
-                    nowElapsedMs = nowElapsed,
-                    pendingCelebration = null,
-                    unapprovedAppWarning = null
-                )
-            }
-            repository.saveTimerSnapshot(resumed)
+            persistTimerSnapshotSuspend(resumed)
             FocusTimerService.syncWithSnapshot(appContext, resumed)
         }
     }
@@ -2045,10 +2202,11 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
      * Extends the active study, break, lecture, or gaming timer without guilt.
      */
     fun extendActiveTimer(extraMinutes: Int) {
-        val nowEpoch = System.currentTimeMillis()
-        val nowElapsed = SystemClock.elapsedRealtime()
-        val snap = uiState.value.timer.snapshot
-        val extended = FocusTimerEngine.extendActiveTimer(snap, extraMinutes, nowEpoch, nowElapsed)
+        val extended = timerController.applyTransition { current, nowEpoch, nowElapsed ->
+            FocusTimerEngine.extendActiveTimer(current, extraMinutes, nowEpoch, nowElapsed)
+        }
+        val nowEpoch = extended.runningSinceEpochMs ?: System.currentTimeMillis()
+        val nowElapsed = extended.runningSinceElapsedRealtimeMs ?: SystemClock.elapsedRealtime()
         BrainBufferNotificationManager.cancelCompletionNotification(appContext)
         ephemeral.update {
             it.copy(
@@ -2058,7 +2216,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             )
         }
         viewModelScope.launch {
-            repository.saveTimerSnapshot(extended)
+            persistTimerSnapshotSuspend(extended)
             FocusTimerService.syncWithSnapshot(appContext, extended)
         }
     }
@@ -2093,37 +2251,39 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                     }
                 )
             }
-            val strictSnap = FocusTimerEngine.startStrictFocus(
-                subjectId = subjectId,
-                sessionGoal = sessionGoal,
-                activityType = activityType,
-                durationMinutes = durationMinutes,
-                strictness = strictness,
-                enableAodStyle = enableAodStyle,
-                dndActive = dndActivated,
-                nowEpochMs = nowEpoch,
-                nowElapsedRealtimeMs = nowElapsed,
-                guardLevel = guardLevel
-            )
+            val strictSnap = timerController.applyTransition { _, epoch, elapsed ->
+                FocusTimerEngine.startStrictFocus(
+                    subjectId = subjectId,
+                    sessionGoal = sessionGoal,
+                    activityType = activityType,
+                    durationMinutes = durationMinutes,
+                    strictness = strictness,
+                    enableAodStyle = enableAodStyle,
+                    dndActive = dndActivated,
+                    nowEpochMs = epoch,
+                    nowElapsedRealtimeMs = elapsed,
+                    guardLevel = guardLevel
+                )
+            }
             ephemeral.update {
                 it.copy(
-                    nowEpochMs = nowEpoch,
-                    nowElapsedMs = nowElapsed,
+                    nowEpochMs = strictSnap.runningSinceEpochMs ?: nowEpoch,
+                    nowElapsedMs = strictSnap.runningSinceElapsedRealtimeMs ?: nowElapsed,
                     wasRecentlyCancelled = false,
                     unapprovedAppWarning = null
                 )
             }
-            repository.saveTimerSnapshot(strictSnap)
+            persistTimerSnapshotSuspend(strictSnap)
             FocusTimerService.syncWithSnapshot(appContext, strictSnap)
             com.example.widget.BrainBufferFocusWidgetProvider.updateAllWidgets(appContext)
         }
     }
 
     fun toggleStrictFocusAod() {
-        val snap = uiState.value.timer.snapshot
-        viewModelScope.launch {
-            repository.saveTimerSnapshot(snap.copy(strictFocusAodStyle = !snap.strictFocusAodStyle))
+        val updated = timerController.applyTransition { snap, _, _ ->
+            snap.copy(strictFocusAodStyle = !snap.strictFocusAodStyle)
         }
+        persistTimerSnapshot(updated)
     }
 
     /**
@@ -2132,10 +2292,8 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
     fun exitStrictFocus(keepTimerRunning: Boolean = false) {
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
-        val snap = uiState.value.timer.snapshot
-        viewModelScope.launch {
-            restoreDndIfNeeded()
-            val updated = if (keepTimerRunning) {
+        val updated = timerController.applyTransition { snap, _, _ ->
+            if (keepTimerRunning) {
                 snap.copy(
                     isStrictFocus = false,
                     strictFocusAodStyle = false,
@@ -2144,8 +2302,11 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             } else {
                 FocusTimerEngine.reset(snap)
             }
-            ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed) }
-            repository.saveTimerSnapshot(updated)
+        }
+        ephemeral.update { it.copy(nowEpochMs = nowEpoch, nowElapsedMs = nowElapsed) }
+        viewModelScope.launch {
+            restoreDndIfNeeded()
+            persistTimerSnapshotSuspend(updated)
             if (updated.hasStarted) {
                 FocusTimerService.syncWithSnapshot(appContext, updated)
             } else {
@@ -2206,12 +2367,15 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
      * - Rejects duplicate calls for the same sessionId.
      * - Persists exact completed duration (actual == planned), updates stats, and clears timer cleanly.
      */
-    fun completeCurrentSession(autoCompleted: Boolean = true) {
+    fun completeCurrentSession(
+        autoCompleted: Boolean = true,
+        overrideSnapshot: PersistedTimerSnapshot? = null
+    ) {
         if (isCompletingSession) return
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
         val currentState = uiState.value
-        val snap = currentState.timer.snapshot
+        val snap = overrideSnapshot ?: timerController.snapshot
 
         val decision = FocusTimerEngine.evaluateNaturalCompletion(
             snapshot = snap,
@@ -2225,6 +2389,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
 
         isCompletingSession = true
         completedSessionIdsInMemory.add(decision.sessionId)
+        timerController.markSessionCompleted(decision.sessionId)
 
         viewModelScope.launch {
             try {
@@ -2331,7 +2496,8 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                     )
 
                     val resetSnap = FocusTimerEngine.markCompletedAndReset(snap, sessionKey)
-                    repository.saveTimerSnapshot(resetSnap)
+                    timerController.applyTransition { _, _, _ -> resetSnap }
+                    persistTimerSnapshotSuspend(resetSnap)
                     restoreDndIfNeeded()
                     if (!currentState.manualBlockingSession.isEnforcing(nowEpoch)) {
                         FocusTimerService.stopService(appContext)
@@ -2341,6 +2507,11 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                         context = appContext,
                         event = HapticEvent.SESSION_COMPLETE,
                         enabled = currentState.preferences.hapticsEnabled
+                    )
+                    com.example.audio.FocusCompletionSoundPlayer.playCompletionChime(
+                        context = appContext,
+                        sessionId = sessionKey,
+                        enabled = currentState.preferences.soundEnabled
                     )
                     if (autoCompleted) {
                         BrainBufferNotificationManager.postCompletionNotification(
@@ -2387,14 +2558,16 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                             hasStarted = false,
                             lastCompletedSessionId = sessionKey
                         )
-                        repository.saveTimerSnapshot(frozenSnap)
+                        timerController.applyTransition { _, _, _ -> frozenSnap }
+                        persistTimerSnapshotSuspend(frozenSnap)
                     } else {
                         val focusReady = FocusTimerEngine.configureMode(
                             snap,
                             FocusMode.FOCUS,
                             currentState.preferences.preferredFocusMinutes
                         ).copy(lastCompletedSessionId = sessionKey)
-                        repository.saveTimerSnapshot(focusReady)
+                        timerController.applyTransition { _, _, _ -> focusReady }
+                        persistTimerSnapshotSuspend(focusReady)
                         restoreDndIfNeeded()
                     }
                     if (!currentState.manualBlockingSession.isEnforcing(nowEpoch)) {
@@ -2406,6 +2579,11 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                         context = appContext,
                         event = HapticEvent.SESSION_COMPLETE,
                         enabled = currentState.preferences.hapticsEnabled
+                    )
+                    com.example.audio.FocusCompletionSoundPlayer.playCompletionChime(
+                        context = appContext,
+                        sessionId = sessionKey,
+                        enabled = currentState.preferences.soundEnabled
                     )
                     if (autoCompleted) {
                         BrainBufferNotificationManager.postCompletionNotification(
@@ -2457,7 +2635,7 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
         val nowEpoch = System.currentTimeMillis()
         val nowElapsed = SystemClock.elapsedRealtime()
         val currentState = uiState.value
-        val rawSnap = currentState.timer.snapshot
+        val rawSnap = timerController.snapshot
         // Unwind any active Break to the parent Focus session and fold any open Temporary Access time
         val effectiveSnap = FocusTimerEngine.resolveParentForEarlyExit(
             snapshot = rawSnap,
@@ -2470,11 +2648,12 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
             snapshot = effectiveSnap,
             nowEpochMs = nowEpoch,
             nowElapsedRealtimeMs = nowElapsed,
-            completedSessionIds = completedSessionIdsInMemory
+            completedSessionIds = completedSessionIdsInMemory + timerController.snapshotCompletedSessionIds()
         )
         isCompletingSession = true
         if (decision.shouldPersist) {
             completedSessionIdsInMemory.add(decision.sessionId)
+            timerController.markSessionCompleted(decision.sessionId)
         }
 
         viewModelScope.launch {
@@ -2566,7 +2745,8 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
                 com.example.system.DistractionAlertCoordinator.clearSession(effectiveSnap.sessionId)
                 repository.saveActiveTempAccess(null)
                 val cleaned = FocusTimerEngine.markCompletedAndReset(effectiveSnap, decision.sessionId)
-                repository.saveTimerSnapshot(cleaned)
+                timerController.applyTransition { _, _, _ -> cleaned }
+                persistTimerSnapshotSuspend(cleaned)
                 restoreDndIfNeeded()
                 if (!currentState.manualBlockingSession.isEnforcing(nowEpoch)) {
                     FocusTimerService.stopService(appContext)
@@ -3239,6 +3419,9 @@ class BrainBufferViewModel(application: Application) : AndroidViewModel(applicat
 
     override fun onCleared() {
         tickerJob?.cancel()
+        externalTimerSyncJob?.cancel()
+        timerController.close()
+        soundscapeController.release()
         super.onCleared()
     }
 }

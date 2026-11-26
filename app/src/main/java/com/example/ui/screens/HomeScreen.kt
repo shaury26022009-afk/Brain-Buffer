@@ -47,6 +47,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +59,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -104,9 +108,19 @@ fun HomeScreen(
     onFocusTask: (StudyTask) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val adaptive = LocalAdaptiveMetrics.current
-    val hasNotifications = remember(uiState.nowEpochMs) {
-        BrainBufferNotificationManager.hasNotificationPermission(context)
+    var hasNotifications by remember {
+        mutableStateOf(BrainBufferNotificationManager.hasNotificationPermission(context))
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasNotifications = BrainBufferNotificationManager.hasNotificationPermission(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     val todaySummary = remember(
@@ -193,7 +207,8 @@ fun HomeScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.Settings,
-                                contentDescription = "Open Settings"
+                                contentDescription = "Open Settings",
+                                tint = MaterialTheme.colorScheme.onBackground
                             )
                         }
                     }
@@ -559,7 +574,11 @@ fun HomeScreen(
                                     },
                                     modifier = Modifier.testTag("home_quick_task_add_button")
                                 ) {
-                                    Icon(Icons.Rounded.Add, contentDescription = "Add task")
+                                    Icon(
+                                        imageVector = Icons.Rounded.Add,
+                                        contentDescription = "Add task",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
                                 }
                             }
 

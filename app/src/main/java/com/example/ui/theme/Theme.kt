@@ -2,11 +2,10 @@ package com.example.ui.theme
 
 import android.app.Activity
 import android.provider.Settings
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
@@ -87,8 +86,8 @@ private val LightGlassContainer = Color(0xD9F1ECFA)
 private val LightGlassContainerHigh = Color(0xE6EBE4F7)
 private val LightGlassContainerHighest = Color(0xF2E3DAF3)
 private val LightGlassVariant = Color(0xBFD9D0EC)
-private val LightGlassOutline = Color(0x336B4CE6)
-private val LightGlassOutlineSubtle = Color(0x1C6B4CE6)
+private val LightGlassOutline = Color(0x476B4CE6)
+private val LightGlassOutlineSubtle = Color(0x2B6B4CE6)
 
 // ============================================================================
 // Material 3 ColorSchemes — Translucent Liquid Glass Light & AMOLED Dark
@@ -323,63 +322,6 @@ object BrainBufferThemeTokens {
         get() = LocalAdaptiveBlurState.current
 }
 
-@Composable
-private fun animateThemeColor(target: Color, durationMs: Int): Color {
-    if (durationMs <= 0) return target
-    val color by animateColorAsState(
-        targetValue = target,
-        animationSpec = tween(durationMillis = durationMs),
-        label = "themeColor"
-    )
-    return color
-}
-
-@Composable
-private fun animateColorScheme(target: ColorScheme, durationMs: Int): ColorScheme {
-    if (durationMs <= 0) return target
-    return target.copy(
-        primary = animateThemeColor(target.primary, durationMs),
-        onPrimary = animateThemeColor(target.onPrimary, durationMs),
-        primaryContainer = animateThemeColor(target.primaryContainer, durationMs),
-        onPrimaryContainer = animateThemeColor(target.onPrimaryContainer, durationMs),
-        secondary = animateThemeColor(target.secondary, durationMs),
-        secondaryContainer = animateThemeColor(target.secondaryContainer, durationMs),
-        tertiary = animateThemeColor(target.tertiary, durationMs),
-        tertiaryContainer = animateThemeColor(target.tertiaryContainer, durationMs),
-        background = animateThemeColor(target.background, durationMs),
-        onBackground = animateThemeColor(target.onBackground, durationMs),
-        surface = animateThemeColor(target.surface, durationMs),
-        onSurface = animateThemeColor(target.onSurface, durationMs),
-        surfaceVariant = animateThemeColor(target.surfaceVariant, durationMs),
-        onSurfaceVariant = animateThemeColor(target.onSurfaceVariant, durationMs),
-        surfaceContainerLowest = animateThemeColor(target.surfaceContainerLowest, durationMs),
-        surfaceContainerLow = animateThemeColor(target.surfaceContainerLow, durationMs),
-        surfaceContainer = animateThemeColor(target.surfaceContainer, durationMs),
-        surfaceContainerHigh = animateThemeColor(target.surfaceContainerHigh, durationMs),
-        surfaceContainerHighest = animateThemeColor(target.surfaceContainerHighest, durationMs),
-        outline = animateThemeColor(target.outline, durationMs),
-        outlineVariant = animateThemeColor(target.outlineVariant, durationMs)
-    )
-}
-
-@Composable
-private fun animateGlassSurfaceColors(
-    target: LiquidGlassSurfaceColors,
-    durationMs: Int
-): LiquidGlassSurfaceColors {
-    if (durationMs <= 0) return target
-    return target.copy(
-        canvas = animateThemeColor(target.canvas, durationMs),
-        glassBase = animateThemeColor(target.glassBase, durationMs),
-        glassSubtle = animateThemeColor(target.glassSubtle, durationMs),
-        glassElevated = animateThemeColor(target.glassElevated, durationMs),
-        glassAccent = animateThemeColor(target.glassAccent, durationMs),
-        specularBorderTop = animateThemeColor(target.specularBorderTop, durationMs),
-        specularBorderBottom = animateThemeColor(target.specularBorderBottom, durationMs),
-        hairlineDivider = animateThemeColor(target.hairlineDivider, durationMs)
-    )
-}
-
 // ============================================================================
 // Root Theme Composables
 // ============================================================================
@@ -443,32 +385,13 @@ fun BrainBufferTheme(
             reducedMotion = reducedMotion
         )
     }
-    val animMs = if (reducedMotion) 0 else renderQuality.transitionDurationMs
-
     val targetScheme = if (darkTheme) AmoledLiquidGlassColorScheme else LightLiquidGlassColorScheme
-    val animatedScheme = animateColorScheme(target = targetScheme, durationMs = animMs)
-
     val targetExtended = if (darkTheme) HighContrastDarkExtendedColors else LightExtendedColors
-    val animatedExtended = if (animMs <= 0) {
-        targetExtended
-    } else {
-        targetExtended.copy(
-            secondaryBackground = animateThemeColor(targetExtended.secondaryBackground, animMs),
-            cardBorder = animateThemeColor(targetExtended.cardBorder, animMs),
-            navBarSurface = animateThemeColor(targetExtended.navBarSurface, animMs),
-            navBarBorder = animateThemeColor(targetExtended.navBarBorder, animMs)
-        )
-    }
-
     val targetGlassSurface = if (darkTheme) {
         AmoledLiquidGlassSurfaceColors
     } else {
         LightLiquidGlassSurfaceColors
     }
-    val animatedGlassSurface = animateGlassSurfaceColors(
-        target = targetGlassSurface,
-        durationMs = animMs
-    )
 
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -519,18 +442,19 @@ fun BrainBufferTheme(
     }
 
     CompositionLocalProvider(
-        LocalBrainBufferColors provides animatedExtended,
-        LocalLiquidGlassSurfaceColors provides animatedGlassSurface,
+        LocalBrainBufferColors provides targetExtended,
+        LocalLiquidGlassSurfaceColors provides targetGlassSurface,
         LocalBrainBufferTextStyles provides DefaultBrainBufferTextStyles,
         LocalReducedMotion provides reducedMotion,
         LocalPerformanceQuality provides renderQuality,
         LocalAppInForeground provides isAppInForeground,
         LocalAdaptiveBlurController provides blurController,
         LocalAdaptiveBlurState provides blurState,
-        LocalLiquidGlassTokens provides liquidGlassTokens
+        LocalLiquidGlassTokens provides liquidGlassTokens,
+        LocalContentColor provides targetScheme.onBackground
     ) {
         MaterialTheme(
-            colorScheme = animatedScheme,
+            colorScheme = targetScheme,
             typography = BrainBufferTypography,
             shapes = BrainBufferShapes,
             content = content

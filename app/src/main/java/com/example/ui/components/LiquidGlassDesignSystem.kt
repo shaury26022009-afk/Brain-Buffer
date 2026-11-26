@@ -37,10 +37,12 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -464,10 +466,14 @@ fun LiquidGlassCard(
                     }
             )
         }
-        Column(
-            modifier = Modifier.padding(contentPadding),
-            content = content
-        )
+        CompositionLocalProvider(
+            LocalContentColor provides MaterialTheme.colorScheme.onSurface
+        ) {
+            Column(
+                modifier = Modifier.padding(contentPadding),
+                content = content
+            )
+        }
     }
 }
 
@@ -481,7 +487,7 @@ fun LiquidGlassButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     accentStart: Color = MaterialTheme.colorScheme.primary,
-    accentEnd: Color = if (BrainBufferThemeTokens.glass.isDark) SoftPurple else VioletDeep,
+    accentEnd: Color = if (BrainBufferThemeTokens.glass.isDark) Color(0xFFB39DF9) else VioletDeep,
     contentColor: Color = MaterialTheme.colorScheme.onPrimary,
     cornerRadius: Dp = 16.dp,
     height: Dp = 50.dp,

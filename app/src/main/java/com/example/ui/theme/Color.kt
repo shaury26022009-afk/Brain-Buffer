@@ -55,7 +55,7 @@ val LightInverseSurface = Color(0xFF18181B)
 val LightInverseOnSurface = Color(0xFFF4F4F5)
 val LightInversePrimary = LavenderLuminous
 
-val LightError = Color(0xFFD64564)
+val LightError = Color(0xFFC42B4F)
 val LightOnError = Color(0xFFFFFFFF)
 val LightErrorContainer = Color(0xFFFFE5EB)
 val LightOnErrorContainer = Color(0xFF5C1123)

@@ -13,6 +13,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.ThemeMode
@@ -28,6 +29,8 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: BrainBufferViewModel by viewModels()
     private val isAppInForegroundState = mutableStateOf(true)
+    private var wasInBackground = false
+    private val foregroundResumeSignalState = mutableIntStateOf(0)
     private val pendingNotificationRoute = mutableStateOf<String?>(null)
     private val pendingOpenControlledAccess = mutableStateOf(false)
     private val pendingOpenChangePurpose = mutableStateOf(false)
@@ -64,6 +67,7 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.SYSTEM -> systemDark
             }
             val isInForeground by isAppInForegroundState
+            val foregroundResumeSignal by foregroundResumeSignalState
             val deepLinkRoute by pendingNotificationRoute
             val openControlledAccess by pendingOpenControlledAccess
             val openChangePurpose by pendingOpenChangePurpose
@@ -111,6 +115,7 @@ class MainActivity : ComponentActivity() {
                 BrainBufferApp(
                     viewModel = viewModel,
                     navigationState = navigationState,
+                    foregroundResumeSignal = foregroundResumeSignal,
                     openControlledAccessRequest = openControlledAccess,
                     onControlledAccessRequestConsumed = { pendingOpenControlledAccess.value = false },
                     openChangePurposeRequest = openChangePurpose,
@@ -147,10 +152,15 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         isAppInForegroundState.value = true
+        if (wasInBackground) {
+            wasInBackground = false
+            foregroundResumeSignalState.intValue += 1
+        }
     }
 
     override fun onStop() {
         isAppInForegroundState.value = false
+        wasInBackground = true
         super.onStop()
     }
 
